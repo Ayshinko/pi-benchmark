@@ -1,0 +1,23 @@
+import { displayWidth, renderBenchmarkStatus, ThrottledStatus } from "../src/status.ts";
+let failures = 0;
+function check(name: string, ok: boolean) { if (!ok) { failures++; console.error("FAIL", name); } else console.log("ok", name); }
+const gen = { run: 1, runs: 1, elapsedMs: 138000, phase: "generating" as const, liveTps: 62, averageTps: 59 };
+check("generating example", renderBenchmarkStatus(gen) === "🏯 1/1 · 2m18s · Live 62 · Avg 59");
+check("prefill example", renderBenchmarkStatus({ ...gen, phase: "prefill", ppTps: 1250 }) === "🏯 1/1 · 2m18s · PP 1250 tok/s");
+check("validation example", renderBenchmarkStatus({ ...gen, phase: "validating", elapsedMs: 185000 }) === "🏯 1/1 · 3m05s · Validating…");
+check("ANSI and CJK width", displayWidth("\u001b[31m🏯界\u001b[0m") === 4);
+for (let width = 1; width <= 64; width++) check(`layout bounded ${width}`, displayWidth(renderBenchmarkStatus({ ...gen, runs: 12 }, width)) <= width);
+const outputs: Array<string | undefined> = [];
+let now = 1000;
+const status = new ThrottledStatus((x) => outputs.push(x), 400, () => 80);
+status.update(gen, now);
+for (let i = 0; i < 100; i++) status.update({ ...gen, liveTps: 62 + i / 100 }, now + i);
+check("frequent deltas throttled", outputs.length === 1);
+status.update({ ...gen, phase: "validating" }, now + 401);
+check("phase transition rendered", outputs.length === 2 && outputs[1]?.includes("Validating"));
+status.update({ ...gen, phase: "validating" }, now + 900);
+check("identical text does not flicker", outputs.length === 2);
+status.clear();
+check("clear resets status", outputs.at(-1) === undefined);
+if (failures) process.exit(1);
+console.log("STATUS TESTS PASSED");

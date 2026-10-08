@@ -19,7 +19,7 @@
     ]
   },
   "scripts": {
-    "test": "node test/harness.test.ts && node test/auth-regression.test.ts && node test/metrics-incremental.test.ts && node test/native-metrics.test.ts && node test/benchmark-ux.test.ts"
+    "test": "node test/harness.test.ts && node test/auth-regression.test.ts && node test/metrics-incremental.test.ts && node test/native-metrics.test.ts && node test/status.test.ts && node test/benchmark-ux.test.ts"
   },
   "dependencies": {
     "puppeteer-core": "^23.11.0"

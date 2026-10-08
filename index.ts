@@ -30,6 +30,7 @@ import { productionBenchmarks, resolveBenchmark, getPrompt } from "./src/prompts
 import { runBenchmark } from "./src/runner.ts";
 import { liveLine, formatTable, formatRunDetail, formatTps } from "./src/format.ts";
 import { formatResultCard, formatAggregateCard } from "./src/reporting.ts";
+import { ThrottledStatus } from "./src/status.ts";
 import { BENCH_ROOT, loadRuns, latestRuns, findRun, saveRun } from "./src/store.ts";
 import {
   parseBenchmarkInvocation,
@@ -207,9 +208,14 @@ export async function executeBenchmark(
   const save = deps.save ?? saveRun;
   const task = getPrompt(plan.benchmarkKey);
   const results: any[] = [];
+  const status = new ThrottledStatus((text) => ctx.ui.setStatus("pi-benchmark", text));
+  const startedAt = Date.now();
+  let currentRun = 1;
+  const elapsedTimer = setInterval(() => status.update({ run: currentRun, runs: plan.runs, elapsedMs: Date.now() - startedAt, phase: "other" }), 1000);
 
   for (let index = 1; index <= plan.runs; index++) {
-    ctx.ui.setStatus("pi-benchmark", `${task.name} · Run ${index}/${plan.runs} starting...`);
+    currentRun = index;
+    status.update({ run: index, runs: plan.runs, elapsedMs: Date.now() - startedAt, phase: "other" });
 
     const result = await run({
       benchmark: task.benchmark,
@@ -229,8 +235,13 @@ export async function executeBenchmark(
       fake: plan.fake,
       fakeArtifactPath: plan.fake ? FAKE_ARTIFACT : undefined,
       signal: ctx.signal,
-      onProgress: (line) =>
-        ctx.ui.setStatus("pi-benchmark", `${task.name} · Run ${index}/${plan.runs}: ${line}`),
+      onProgress: (line) => {
+        const phase = /Validating/i.test(line) ? "validating" : /native Live|live\s+[\d.]+\s+tok\/s/i.test(line) ? "generating" : /Reading|prefill/i.test(line) ? "prefill" : "other";
+        const live = line.match(/native Live ([\d.]+)/i) ?? line.match(/live\s+([\d.]+)\s+tok\/s/i);
+        const avg = line.match(/taskAvg\s+([\d.]+)/i);
+        const pp = line.match(/PP\s+([\d.]+)/i);
+        status.update({ run: index, runs: plan.runs, elapsedMs: Date.now() - startedAt, phase, liveTps: live ? Number(live[1]) : undefined, averageTps: avg ? Number(avg[1]) : undefined, ppTps: pp ? Number(pp[1]) : undefined, fallback: /estimated|mixed/i.test(line) });
+      },
     });
 
     save(result);
@@ -247,7 +258,8 @@ export async function executeBenchmark(
     });
   }
 
-  ctx.ui.setStatus("pi-benchmark", undefined);
+  clearInterval(elapsedTimer);
+  status.clear();
   // For multiple runs, follow the per-run cards with a single aggregate summary.
   // A single run already got its one detailed card above, so repeating it here
   // would duplicate the card.

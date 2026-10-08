@@ -212,7 +212,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
       nativePoller = new StrataMetricsPoller(metricsUrl, 300, 500, (snapshot) => {
         nativeSnapshot = snapshot;
         if (snapshot && !snapshot.completed) metrics.setActiveNative(snapshot.outputTokens, snapshot.liveTps);
-        if (snapshot) cfg.onProgress?.(`${liveLine(metrics.snapshot(), { live: true })} | native Live ${snapshot.liveTps.toFixed(1)} | Mean ${snapshot.meanTps.toFixed(1)} | PP ${snapshot.ppTps.toFixed(0)} tok/s`);
+        if (snapshot) cfg.onProgress?.(`${snapshot.ppTps > 0 && snapshot.liveTps === 0 ? `Reading PP ${snapshot.ppTps.toFixed(0)} tok/s` : `Generating native Live ${snapshot.liveTps.toFixed(1)}`} taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
       });
       await nativePoller.start();
       // ModelRuntime.streamSimple is the actual child provider-request boundary,
@@ -273,9 +273,11 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
           }).catch(() => undefined));
         }
         cfg.onProgress?.(liveLine(metrics.snapshot()));
+      } else if (event.type === "tool_execution_start") {
+        cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
       } else if (event.type === "tool_execution_end") {
         metrics.toolCall(Boolean(event.isError));
-        cfg.onProgress?.(liveLine(metrics.snapshot()));
+        cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
       }
     });
 
@@ -347,6 +349,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     browser.skipped = true;
     browser.errors.push("browser validation disabled by --no-browser");
   } else if (artifact.found) {
+    cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
     const report = await validateArtifact({
       htmlPath: artifact.path!,
       screenshotPath: paths.screenshotPath,
