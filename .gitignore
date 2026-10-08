@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+# Benchmark outputs and local/session data
+benchmarks/
+**/session/
+**/screenshot.png
+*.png
+**/workspace/

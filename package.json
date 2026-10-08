@@ -1,0 +1,35 @@
+{
+  "name": "pi-benchmark",
+  "version": "0.1.0",
+  "description": "Pi Benchmark: isolated coding-agent benchmarks with native Strata TPS, browser validation, and reproducible history.",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "benchmark",
+    "artifact",
+    "tps"
+  ],
+  "author": "Ayshinko",
+  "license": "MIT",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node test/harness.test.ts && node test/auth-regression.test.ts && node test/metrics-incremental.test.ts && node test/native-metrics.test.ts && node test/benchmark-ux.test.ts"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.11.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.4",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "jiti": "2.7.0"
+  }
+}

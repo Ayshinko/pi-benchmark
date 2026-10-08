@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Voxel Pagoda Garden</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b1220; }
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+    <script>
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x101827, 40, 120);
+
+      const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 500);
+
+      const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x2b1a12, 0.55);
+      scene.add(hemi);
+
+      const sun = new THREE.DirectionalLight(0xffd9a0, 1.1);
+      sun.position.set(24, 34, 18);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(1024, 1024);
+      scene.add(sun);
+
+      const V = 1; // voxel size
+      function voxel(x, y, z, color, size = V) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshStandardMaterial({ color }));
+        mesh.position.set(x * size, y * size + size / 2, z * size);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        return mesh;
+      }
+
+      // Ground: grass voxels with a little variation.
+      const GROUND = 40;
+      for (let x = -GROUND / 2; x < GROUND / 2; x++) {
+        for (let z = -GROUND / 2; z < GROUND / 2; z++) {
+          const shade = 0x2f + ((x * 7 + z * 13) % 5) * 6;
+          voxel(x, 0, z, shade << 16 | 0x70 << 8 | 0x3a);
+        }
+      }
+
+      // Pond.
+      for (let x = -12; x <= -6; x++) {
+        for (let z = 4; z <= 10; z++) {
+          voxel(x, 0, z, 0x1f6f8c);
+        }
+      }
+
+      // Rocks around the pond.
+      for (let i = 0; i < 14; i++) {
+        const angle = (i / 14) * Math.PI * 2;
+        voxel(Math.round(-9 + Math.cos(angle) * 7), 0, Math.round(7 + Math.sin(angle) * 7), 0x5b6470);
+      }
+
+      // Pagoda: five tiers, each smaller than the one below.
+      const tiers = 5;
+      let y = 1;
+      for (let tier = 0; tier < tiers; tier++) {
+        const half = 5 - tier;
+        // pillars
+        for (let x = -half; x <= half; x++) {
+          for (let z = -half; z <= half; z++) {
+            if (Math.abs(x) === half || Math.abs(z) === half) voxel(x, y, z, 0x7a3b2e);
+          }
+        }
+        // floor
+        for (let x = -half + 1; x <= half - 1; x++) {
+          for (let z = -half + 1; z <= half - 1; z++) voxel(x, y, z, 0x9c5b3a);
+        }
+        y += 1;
+        // roof: stepped, overhanging
+        const roofHalf = half + 1;
+        for (let step = 0; step < 2; step++) {
+          const r = roofHalf - step;
+          for (let x = -r; x <= r; x++) {
+            for (let z = -r; z <= r; z++) voxel(x, y + step, z, step === 0 ? 0x2b3a4a : 0x14202b);
+          }
+        }
+        y += 2;
+      }
+      // spire
+      voxel(0, y, 0, 0xd4a017);
+      voxel(0, y + 1, 0, 0xd4a017);
+
+      // Lanterns on posts.
+      const lanternPositions = [[-6, -6], [6, -6], [-6, 6], [6, 6], [0, -10], [0, 12]];
+      for (const [x, z] of lanternPositions) {
+        voxel(x, 1, z, 0x3a2a1a);
+        voxel(x, 2, z, 0x3a2a1a);
+        const lantern = voxel(x, 3, z, 0xffb347);
+        lantern.material.emissive = new THREE.Color(0xffb347);
+        lantern.material.emissiveIntensity = 0.9;
+        const light = new THREE.PointLight(0xffb347, 0.6, 12);
+        light.position.set(x, 3.5, z);
+        scene.add(light);
+      }
+
+      // Trees.
+      function tree(x, z) {
+        for (let i = 1; i <= 4; i++) voxel(x, i, z, 0x5a3a22);
+        for (let dx = -2; dx <= 2; dx++) {
+          for (let dz = -2; dz <= 2; dz++) {
+            for (let dy = 4; dy <= 6; dy++) {
+              if (Math.abs(dx) + Math.abs(dz) + (dy - 4) <= 3) voxel(x + dx, dy, z + dz, 0x2f7d3a);
+            }
+          }
+        }
+      }
+      tree(-14, -10);
+      tree(14, -8);
+      tree(-13, 12);
+      tree(13, 13);
+      tree(11, 2);
+
+      // Stone path.
+      for (let z = -20; z <= -6; z++) voxel(0, 0, z, 0x8a8f98);
+
+      let angle = 0.6;
+      function animate() {
+        angle += 0.004;
+        camera.position.set(Math.cos(angle) * 34, 22, Math.sin(angle) * 34);
+        camera.lookAt(0, 6, 0);
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+      }
+      animate();
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>

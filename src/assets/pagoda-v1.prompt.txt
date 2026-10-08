@@ -1,0 +1,112 @@
+This is a one-shot coding benchmark.
+
+Work autonomously. Do not ask questions.
+
+Create the complete final artifact FROM SCRATCH as:
+
+index.html
+
+in the current empty directory.
+
+The file must open directly in a modern browser without a build step.
+
+CDN imports for Three.js are allowed.
+Do not use external models, textures, images, or other content assets.
+
+TASK:
+
+Create a complete interactive Voxel Japanese Pagoda Garden using Three.js in a single HTML file.
+
+Build everything procedurally from primitive voxel geometry.
+
+Include:
+- a large multi-level Japanese pagoda as the main focal point
+- torii gate
+- cherry blossom trees
+- pond
+- Japanese bridge
+- rocks
+- grass
+- flowers
+- shrubs / vegetation
+- stone lanterns
+- paths / stepping stones
+- dense landscaped garden detail
+
+Use thousands of colored voxels and THREE.InstancedMesh where appropriate.
+
+Add:
+- atmospheric lighting
+- soft shadows
+- fog / depth
+- floating particles
+- falling cherry blossom petals
+- subtle environmental animation
+- smooth mouse-drag orbit
+- mouse-wheel zoom
+- gentle auto-orbit when idle
+- FPS display
+- total voxel count display
+
+The final result should look like a beautiful stylized voxel game environment, not a technical demo.
+
+There is NO arbitrary voxel-count limit.
+
+Do not invent limits such as 35k, 50k, 70k or 100k voxels.
+
+Do not reduce visual quality merely because voxel count is high.
+
+Static voxels rendered efficiently with InstancedMesh may be numerous.
+
+If performance is actually poor, optimize rendering/per-frame work before deleting visible detail.
+
+EXECUTION:
+Keep planning very short.
+Do not narrate long reasoning.
+Do not repeatedly reconsider the design.
+Use tools and create the artifact directly.
+
+Prioritize:
+1. completing index.html
+2. visual quality
+3. functionality
+4. performance
+
+VALIDATION:
+After index.html is created, run ONLY:
+1. one JavaScript syntax check
+2. one basic structural/runtime check if genuinely needed
+Then STOP.
+
+Do NOT perform:
+- ASCII visualizations
+- top-down maps
+- extra geometry analysis
+- npm installs for optional testing
+- screenshots
+- repeated browser tests
+- repeated validation
+- additional tests after syntax/basic checks pass
+
+Do not use Chrome --disable-gpu for WebGL testing.
+Any validation command must have a maximum timeout of 30 seconds.
+If an optional validation process hangs, terminate only that process and finish.
+Once index.html exists and syntax passes, task completion has priority over further validation.
+
+IMPORTANT:
+Do not output large planning sections.
+Do not dump the full source code into chat after writing it.
+Use your output budget for tool execution and completing the artifact.
+
+FINAL RESPONSE:
+Maximum 6 lines.
+Report only:
+- artifact created
+- major features
+- voxel count if available
+- validation result
+- output path
+
+BUILD IT.
+THEN VALIDATE ONCE.
+THEN STOP.
