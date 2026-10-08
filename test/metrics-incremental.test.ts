@@ -58,6 +58,10 @@ console.log("\n[partial message]");
   check("turns completed 0", s.assistantTurnsCompleted === 0);
   check("activeAssistantTurn 0", s.activeAssistantTurn === 0);
   check("liveTps ~200", near(s.liveTps, 200, 0.01), `got ${s.liveTps}`);
+  m.setActiveNative(1200, 88.5);
+  const nativeLive = m.snapshot();
+  check("active native tokens replace streaming estimate", near(nativeLive.outputTokens, 1200));
+  check("active native Live TPS is surfaced", near(nativeLive.liveTps, 88.5));
 }
 
 console.log("\n[timeout during stream]");

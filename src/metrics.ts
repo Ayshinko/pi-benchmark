@@ -67,6 +67,8 @@ export class RunMetrics {
   private aborted = false;
   private current: GenerationStat | null = null;
   private activeChars = 0;
+  private activeNativeOutput: number | null = null;
+  private activeNativeLiveTps: number | null = null;
   private usedEstimation = false;
   private finishedAt = 0;
 
@@ -106,6 +108,8 @@ export class RunMetrics {
       outputAccuracy: "exact",
     };
     this.activeChars = 0;
+    this.activeNativeOutput = null;
+    this.activeNativeLiveTps = null;
   }
 
   /**
@@ -128,6 +132,13 @@ export class RunMetrics {
     if (!text) return;
     this.activeChars += text.length;
     this.usedEstimation = true;
+  }
+
+  /** Live server token count and speed override the estimate for the active request. */
+  setActiveNative(outputTokens: number, liveTps: number): void {
+    if (!this.current) return;
+    if (Number.isFinite(outputTokens) && outputTokens >= 0) this.activeNativeOutput = outputTokens;
+    if (Number.isFinite(liveTps) && liveTps >= 0) this.activeNativeLiveTps = liveTps;
   }
 
   /** An assistant message was finalized with exact usage. Reconciles the estimate. */
@@ -158,6 +169,8 @@ export class RunMetrics {
     this.generations.push(gen);
     this.current = null;
     this.activeChars = 0;
+    this.activeNativeOutput = null;
+    this.activeNativeLiveTps = null;
   }
 
   /**
@@ -190,6 +203,8 @@ export class RunMetrics {
     this.generations.push(gen);
     this.current = null;
     this.activeChars = 0;
+    this.activeNativeOutput = null;
+    this.activeNativeLiveTps = null;
   }
 
   toolCall(isError: boolean): void {
@@ -211,7 +226,7 @@ export class RunMetrics {
 
   /** Estimated tokens so far for the active turn, if any. */
   private activePartialTokens(): number {
-    return this.activeChars / this.charsPerToken;
+    return this.activeNativeOutput ?? this.activeChars / this.charsPerToken;
   }
 
   /** Generation time currently attributable to the active turn (ms), if any. */
@@ -258,7 +273,7 @@ export class RunMetrics {
       stopReasons.push(this.current!.stopReason);
     }
 
-    const liveTps = activeDecoding ? activePartialTokens / (activeGen / 1000) : 0;
+    const liveTps = activeDecoding ? (this.activeNativeLiveTps ?? activePartialTokens / (activeGen / 1000)) : 0;
     const completedTurns = this.generations.length;
     const startedTurns = completedTurns + (hasActive ? 1 : 0);
     const anyEstimatedGeneration = this.generations.some((g) => g.outputAccuracy === "estimated");
@@ -308,7 +323,7 @@ export class RunMetrics {
     const gen = this.generations[this.generations.length - 1];
     if (!gen || !(outputTokens > 0) || !(decodeSeconds > 0)) return false;
     gen.outputTokens = outputTokens;
-    gen.decodeStartMs = Math.max(gen.requestStartMs, gen.endMs - decodeSeconds * 1000);
+    gen.decodeStartMs = gen.endMs - decodeSeconds * 1000;
     (gen as GenerationStat & { native?: boolean }).native = true;
     return true;
   }

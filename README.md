@@ -32,7 +32,7 @@ fails.
 ```
 
 3. Choose the number of runs (1, 3, 5, or Custom).
-4. Confirm **Start**.
+4. Confirm the plan and the Strata-exclusive-use warning (for native TPS).
 5. Wait for the result card.
 
 `/benchmark` runs **Pagoda v1** with your **current model and thinking level** — it never changes
@@ -146,7 +146,10 @@ Policy:
 ## Live status
 
 While a run streams, a concise status line is shown via the normal status bar and cleared when
-finished (the Pi footer is never permanently modified):
+finished (the Pi footer is never permanently modified). Strata-backed runs show native Live,
+Mean and PP values alongside whole-task Task Avg. Before any real benchmark the user must confirm:
+"For accurate Strata-native TPS, do not run other Pi sessions or other Strata inference clients
+during this benchmark. This benchmark does not technically lock the server. Continue?"
 
 ```
 Pagoda v1 · Run 1/3: elapsed 3m21s | out 8.2k | taskAvg 49.2 tok/s | live 51.1 tok/s | turns 2 | tools 2 | state generating
@@ -158,10 +161,11 @@ Pagoda v1 · Run 1/3: elapsed 3m21s | out 8.2k | taskAvg 49.2 tok/s | live 51.1 
 |---|---|
 | wall time | prompt start → agent loop end, including tool execution |
 | generation time | sum of assistant decode durations only |
-| output tokens | sum of exact `usage.output`; reconciled with streaming estimates |
-| **weighted TPS** | total output tokens / total generation seconds (whole-task) |
+| output tokens | Strata `requests[].output_tokens` when matched; otherwise provider usage or marked estimate |
+| **weighted TPS** | sum of per-request output tokens / sum of those requests' decode seconds (whole-task) |
 | wall TPS | output tokens / wall time |
 | tool calls | tool executions, plus error count |
+| TPS source / accuracy | Strata native (exclusive-use assumption), mixed, or provider/streaming fallback |
 | stop reasons | every assistant turn's stop reason |
 | artifact | discovered HTML, static checks (canvas, THREE, script, closed HTML, size) |
 | browser | headless Chrome: canvas, WebGL, `window.THREE`, scene facts, page/console errors |
@@ -200,6 +204,7 @@ re-registered so authentication works identically inside the isolated session.
 node test/harness.test.ts           # metrics, PNG analysis, outcome, artifact, browser fixtures
 node test/auth-regression.test.ts   # local-provider auth inheritance & fallback
 node test/metrics-incremental.test.ts # streaming estimates and reconciliation
+node test/native-metrics.test.ts     # Strata parsing, baselines, native replacement, fallback
 node test/benchmark-ux.test.ts      # /benchmark UX, canonical prompt & hash, compliance, reports
 ```
 

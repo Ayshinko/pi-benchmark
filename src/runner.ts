@@ -211,6 +211,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     if (metricsUrl) {
       nativePoller = new StrataMetricsPoller(metricsUrl, 300, 500, (snapshot) => {
         nativeSnapshot = snapshot;
+        if (snapshot && !snapshot.completed) metrics.setActiveNative(snapshot.outputTokens, snapshot.liveTps);
         if (snapshot) cfg.onProgress?.(`${liveLine(metrics.snapshot(), { live: true })} | native Live ${snapshot.liveTps.toFixed(1)} | Mean ${snapshot.meanTps.toFixed(1)} | PP ${snapshot.ppTps.toFixed(0)} tok/s`);
       });
       await nativePoller.start();
