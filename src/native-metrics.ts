@@ -23,6 +23,7 @@ function newestTime(p:any):number {return Array.isArray(p?.requests)?p.requests.
 export class StrataMetricsPoller {
   private timer:ReturnType<typeof setTimeout>|null=null;
   private controller:AbortController|null=null;
+  private pending:Promise<any|undefined>|null=null;
   private running=false; private baseline=0; private latestSeenTime=0; private prefill=0; private sawLive=false;
   current:StrataSnapshot|null=null;
   readonly url:string; private interval:number; private timeout:number; private update?:(s:StrataSnapshot|null)=>void;
@@ -32,7 +33,7 @@ export class StrataMetricsPoller {
   beginNativeRequest(){const had=this.current!==null;this.current=null;this.baseline=this.latestSeenTime;this.prefill=0;this.sawLive=false;if(had)this.update?.(null);}
   async finalizeRequest(){const p=await this.fetch();if(p!==undefined){this.latestSeenTime=Math.max(this.latestSeenTime,newestTime(p));const done=parseCompletedRequest(p,this.baseline);this.baseline=this.latestSeenTime;if(done){this.current=done;this.update?.(done);return done;}}return null;}
   stop(){this.running=false;if(this.timer)clearTimeout(this.timer);this.timer=null;this.controller?.abort();this.controller=null;}
-  private async fetch():Promise<any|undefined>{const c=new AbortController();this.controller=c;const t=setTimeout(()=>c.abort(),this.timeout);try{const r=await fetch(this.url,{signal:c.signal,headers:{Accept:"application/json"}});return r.ok?await r.json():undefined;}catch{return undefined;}finally{clearTimeout(t);if(this.controller===c)this.controller=null;}}
+  private fetch():Promise<any|undefined>{if(this.pending)return this.pending;const c=new AbortController();this.controller=c;const t=setTimeout(()=>c.abort(),this.timeout);const task=(async()=>{try{const r=await fetch(this.url,{signal:c.signal,headers:{Accept:"application/json"}});return r.ok?await r.json():undefined;}catch{return undefined;}finally{clearTimeout(t);if(this.controller===c)this.controller=null;}})();this.pending=task;void task.finally(()=>{if(this.pending===task)this.pending=null;});return task;}
   private async tick(){if(!this.running)return;const p=await this.fetch();if(!this.running)return;if(p!==undefined){this.latestSeenTime=Math.max(this.latestSeenTime,newestTime(p));if(!this.baseline)this.baseline=newestTime(p);const l=parseStrataLive(p);if(l){this.sawLive=true;if(l.ppTps>0)this.prefill=l.ppTps;const done=parseCompletedRequest(p,this.baseline);this.current=done??{...l,ppTps:this.prefill};this.update?.(this.current);}}this.timer=setTimeout(()=>void this.tick(),this.interval);}
   async finalize(){const p=await this.fetch();let done=parseCompletedRequest(p,this.baseline);if(!done&&this.baseline>0&&!this.sawLive&&newestTime(p)===this.baseline)done=parseCompletedRequest(p,0);if(done){this.current=done;this.update?.(done);}this.stop();return this.current;}
 }

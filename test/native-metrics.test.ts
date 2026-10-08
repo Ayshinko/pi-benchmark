@@ -29,5 +29,9 @@ const originalFetch=globalThis.fetch;globalThis.fetch=async()=>{throw new Error(
 const unavailable=new StrataMetricsPoller("http://127.0.0.1:1/metrics",300,10);
 await unavailable.start();
 check("missing /metrics returns null fallback",await unavailable.finalizeRequest()===null);
-unavailable.stop();globalThis.fetch=originalFetch;
+unavailable.stop();
+let fetchCalls=0;globalThis.fetch=async()=>{fetchCalls++;await new Promise(r=>setTimeout(r,10));return {ok:true,json:async()=>({live:{state:"idle"},requests:[]})} as any};
+const sharedFetch=new StrataMetricsPoller("http://127.0.0.1:8080/metrics",300,500);
+const starting=sharedFetch.start();const finalizing=sharedFetch.finalizeRequest();await Promise.all([starting,finalizing]);
+check("polling/finalization share one in-flight fetch",fetchCalls===1);sharedFetch.stop();globalThis.fetch=originalFetch;
 if(failures)process.exit(1);console.log("NATIVE TESTS PASSED");
