@@ -1,0 +1,2 @@
+# Benchmark prompts are hashed byte-for-byte; preserve their canonical LF bytes on Windows.
+src/assets/*.prompt.txt text eol=lf
