@@ -27,6 +27,9 @@ import { findArtifact } from "./artifact.ts";
 import { validateArtifact } from "./browser.ts";
 import { determineOutcome } from "./outcome.ts";
 import type { ArtifactReport, BrowserReport, ComplianceReport, RunResult } from "./types.ts";
+import { parseEnduranceEvents } from "./endurance-events.ts";
+import { evaluateEndurance } from "./endurance-evaluator.ts";
+import { scoreEndurance } from "./endurance-scoring.ts";
 
 export interface RunConfig {
   benchmark: string;
@@ -159,6 +162,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   let agentMs = 0;
   let sessionFile: string | null = null;
   const nativeFinalizers: Promise<void>[] = [];
+  const structuredEvents: any[] = [];
   let nativeCompleted = 0;
 
   metrics.start();
@@ -237,6 +241,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     });
 
     const unsubscribe = session.subscribe((event: any) => {
+      structuredEvents.push({ ...event, atMs: metrics.elapsedMs() });
       if (event.type === "message_start" && event.message?.role === "assistant") {
         metrics.beginAssistantMessage();
       } else if (event.type === "message_update") {
@@ -345,7 +350,11 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     visual: null,
   };
 
-  if (!cfg.runBrowser) {
+  const isEndurance = cfg.benchmark === "agent-endurance-v3";
+  if (isEndurance) {
+    browser.skipped = true;
+    browser.errors.push("browser validation not applicable to Python benchmark");
+  } else if (!cfg.runBrowser) {
     browser.skipped = true;
     browser.errors.push("browser validation disabled by --no-browser");
   } else if (artifact.found) {
@@ -364,7 +373,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
   // Compliance validation against the produced artifact source + runtime facts.
   let compliance: ComplianceReport | null = null;
-  if (artifact.found && artifact.path) {
+  if (!isEndurance && artifact.found && artifact.path) {
     try {
       const source = fs.readFileSync(artifact.path, "utf8");
       compliance = evaluateCompliance(source, browser.runtime, artifact.sizeBytes);
@@ -373,7 +382,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     }
   }
 
-  const { outcome, reasons } = determineOutcome({
+  let { outcome, reasons } = determineOutcome({
     metrics: snapshot,
     artifact,
     browser,
@@ -382,6 +391,19 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     harnessError,
     compliance,
   });
+
+  let endurance: RunResult["endurance"];
+  if (isEndurance) {
+    const evaluation = evaluateEndurance(paths.workspace);
+    const telemetry = parseEnduranceEvents(structuredEvents, evaluation.completed);
+    const scores = scoreEndurance(evaluation, telemetry, snapshot, false);
+    outcome = timedOut ? "FAIL_TIMEOUT" : harnessError ? "ERROR_HARNESS" : evaluation.completed ? "PASS" : "FAIL_COMPLIANCE";
+    reasons = evaluation.completed ? [] : evaluation.details.length ? evaluation.details : [`independent evaluator ${evaluation.passed}/${evaluation.total}; phases ${evaluation.phaseCompletion}/12`];
+    endurance = { evaluation, telemetry, scores, resumed: false, configuration: {
+      provider: cfg.model.provider, model: cfg.model.id, thinkingLevel: cfg.thinkingLevel,
+      contextWindow: cfg.model.contextWindow ?? "UNKNOWN", maxTokens: cfg.model.maxTokens ?? "UNKNOWN",
+    } };
+  }
 
   const modelSlug = slug(`${cfg.model.provider}/${cfg.model.id}`);
 
@@ -428,5 +450,6 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     },
     compliance,
     timings: { agentMs, validationMs: browser.durationMs },
+    ...(endurance ? { endurance } : {}),
   };
 }

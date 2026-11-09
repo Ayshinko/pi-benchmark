@@ -139,6 +139,23 @@ export function formatResultCard(run: RunResult): string {
     row("Run directory", run.runDir ?? "n/a"),
   ];
 
+  if (run.endurance) {
+    const e = run.endurance;
+    lines.splice(8, 0,
+      "Engineering and reliability",
+      row("Engineering score", `${e.scores.engineering}/100`),
+      row("Reliability score", String(e.scores.reliability)),
+      row("Autonomous", e.scores.autonomous),
+      row("Hidden tests", `${e.evaluation.passed}/${e.evaluation.total}`),
+      row("Phases", `${e.evaluation.phaseCompletion}/12`),
+      row("Premature stops", String(e.telemetry.prematureStops)),
+      row("Manual continuations", String(e.telemetry.manualContinuations)),
+      row("Compactions", String(e.telemetry.compactions)),
+      row("Active context peak", String(e.telemetry.activeContextPeak)),
+      "",
+    );
+  }
+
   return lines.join("\n");
 }
 

@@ -215,4 +215,12 @@ export interface RunResult {
   /** Compliance validation of the produced artifact (present on new runs). */
   compliance: ComplianceReport | null;
   timings: { agentMs: number; validationMs: number };
+  /** Present only for Agent Endurance V3; absent keeps historical records compatible. */
+  endurance?: {
+    evaluation: import("./endurance-scoring.ts").EnduranceEvaluation;
+    telemetry: import("./endurance-events.ts").EnduranceTelemetry;
+    scores: import("./endurance-scoring.ts").EnduranceScores;
+    resumed: boolean;
+    configuration: Record<string, unknown>;
+  };
 }

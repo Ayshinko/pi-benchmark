@@ -21,6 +21,9 @@ const PAGODA_V1_TEXT = fs.readFileSync(
   path.join(import.meta.dirname, "assets", "pagoda-v1.prompt.txt"),
   "utf8",
 );
+const AGENT_ENDURANCE_V3_TEXT = fs.readFileSync(
+  path.join(import.meta.dirname, "assets", "agent-endurance-v3.prompt.txt"), "utf8",
+);
 
 /**
  * SHA-256 over the exact bytes (UTF-8) of the given prompt text. This is the
@@ -51,14 +54,19 @@ export const PAGODA_V1: BenchmarkPrompt = {
   prompt: PAGODA_V1_TEXT,
   expectedArtifact: "index.html",
 };
+export const AGENT_ENDURANCE_V3: BenchmarkPrompt = {
+  benchmark: "agent-endurance-v3", version: "agent-endurance-v3", name: "Agent Endurance V3",
+  prompt: AGENT_ENDURANCE_V3_TEXT, expectedArtifact: "warehouse/__init__.py",
+};
 
 export const PROMPTS: Record<string, BenchmarkPrompt> = {
   pagoda: PAGODA_V1,
+  "agent-endurance-v3": AGENT_ENDURANCE_V3,
 };
 
 /** The single production benchmark suite currently shipped (pagoda-v1). */
 export function productionBenchmarks(): BenchmarkPrompt[] {
-  return [PAGODA_V1];
+  return [PAGODA_V1, AGENT_ENDURANCE_V3];
 }
 
 /**
@@ -71,7 +79,8 @@ export function resolveBenchmark(ref: string): BenchmarkPrompt {
   if (key === "" || key === "pagoda" || key === "pagoda-v1" || key === "v1" || key === "pagoda v1") {
     return PAGODA_V1;
   }
-  throw new Error(`Unknown benchmark "${ref}". Available production benchmark: pagoda-v1`);
+  if (["agent-endurance-v3", "endurance", "endurance-v3", "agent endurance v3"].includes(key)) return AGENT_ENDURANCE_V3;
+  throw new Error(`Unknown benchmark "${ref}". Available: pagoda-v1, agent-endurance-v3`);
 }
 
 export function getPrompt(benchmark: string): BenchmarkPrompt {

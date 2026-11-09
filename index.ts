@@ -293,27 +293,33 @@ export default function (pi: ExtensionAPI) {
   // Primary entry point: /benchmark
   // ------------------------------------------------------------------ //
   pi.registerCommand("benchmark", {
-    description: "Run a benchmark (Pagoda v1) with the current model. /benchmark N runs N times. /benchmark --advanced for full control.",
+    description: "Run Pagoda v1 or Agent Endurance V3 with the current model.",
     getArgumentCompletions: (prefix) => {
-      const opts = ["--advanced", "1", "3", "5"];
+      const opts = ["agent-endurance-v3", "pagoda-v1", "--advanced", "1", "3", "5"];
       const matches = opts.filter((o) => o.startsWith(prefix));
       return matches.length ? matches.map((o) => ({ value: o, label: o })) : null;
     },
     handler: async (args, ctx) => {
+      const rawTokens = args.trim().split(/\s+/).filter(Boolean);
+      const suiteToken = rawTokens[0] && !rawTokens[0].startsWith("--") && !/^\d+$/.test(rawTokens[0]) ? rawTokens.shift()! : null;
       let invocation;
       try {
-        invocation = parseBenchmarkInvocation(args);
+        invocation = parseBenchmarkInvocation(rawTokens.join(" "));
       } catch (error) {
         ctx.ui.notify((error as Error).message, "error");
         return;
       }
 
       const suites = productionBenchmarks();
-      // STEP 1: only one production suite -> auto-select Pagoda v1.
-      const task = suites.length === 1 ? suites[0] : resolveBenchmark((args.trim().split(/\s+/).filter(Boolean)[0] ?? ""));
+      let task = suiteToken ? resolveBenchmark(suiteToken) : suites[0];
       const model = ctx.model;
       const thinking = currentThinking(ctx);
       const ui = toWizardUI(ctx);
+      if (!suiteToken && invocation.mode === "interactive" && suites.length > 1) {
+        const selected = await ui.select("Benchmark suite", suites.map((s) => `${s.name} (${s.version})`));
+        if (!selected) return;
+        task = suites.find((s) => selected.startsWith(s.name)) ?? suites[0];
+      }
 
       // STEP 2: show current selection (never change it silently).
       ctx.ui.notify(
@@ -414,7 +420,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("artifact-bench", {
     description: "Advanced/legacy benchmark interface. Run pagoda-v1, list history, compare, or show runs.",
     getArgumentCompletions: (prefix) => {
-      const commands = ["pagoda", "history", "compare", "show", "help"];
+      const commands = ["pagoda", "agent-endurance-v3", "history", "compare", "show", "help"];
       const matches = commands.filter((command) => command.startsWith(prefix));
       return matches.length ? matches.map((command) => ({ value: command, label: command })) : null;
     },
@@ -427,7 +433,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(
           [
             "Use /benchmark for the simple first-time flow (Pagoda v1, current model).",
-            "/artifact-bench pagoda [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser] [--fake]",
+            "/artifact-bench <pagoda|agent-endurance-v3> [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser]",
             "/artifact-bench history [--limit N]",
             "/artifact-bench compare <runId> <runId>",
             "/artifact-bench show <runId>",
@@ -481,9 +487,9 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (subcommand === "pagoda") {
+      if (subcommand === "pagoda" || subcommand === "agent-endurance-v3") {
         const options = readRunOptions(flags);
-        const task = getPrompt("pagoda");
+        const task = getPrompt(subcommand);
 
         let model: any;
         try {

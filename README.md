@@ -4,9 +4,31 @@ A benchmark harness for **complete coding-agent tasks**: the agent gets one prom
 empty isolated workspace, must produce a runnable artifact, and the harness verifies that
 artifact in a real browser and scores the run.
 
-The first — and currently only — production benchmark is **Pagoda v1** (`pagoda-v1`): build a
+The original production benchmark is **Pagoda v1** (`pagoda-v1`): build a
 Japanese voxel pagoda garden in Three.js using instancing, interactive controls, particles and
 HUD readouts.
+
+The second production suite is **Agent Endurance V3** (`agent-endurance-v3`), a long-running,
+standard-library-only Python warehouse-system task with hidden deterministic verification.
+
+## Agent Endurance V3
+
+Select it interactively with `/benchmark`, or run it directly with
+`/benchmark agent-endurance-v3` (add a run count, e.g. `/benchmark agent-endurance-v3 1`).
+The legacy form is `/artifact-bench agent-endurance-v3`. It uses the currently selected model,
+provider and thinking level unless advanced flags explicitly override them.
+
+The immutable prompt is `src/assets/agent-endurance-v3.prompt.txt`. Hidden verification lives in
+`src/evaluators/agent-endurance-v3.py`, outside the generated workspace. It checks imports,
+multi-warehouse stock, atomic reservation rollback, transfer and PO receiving bounds, returns and
+duplicate refunds, tamper-resistant persistence, and cross-process CLI JSON behavior.
+
+V3 reports engineering (80% hidden-test pass ratio, 20% phase evidence), reliability, and raw
+efficiency metrics separately. Reliability deducts premature stops, continuations, unrecovered
+tool failures, and resumed execution. Manual continuation and active-context values are `UNKNOWN`
+when Pi does not emit evidence; cumulative token usage is never presented as active context.
+Any resumed run is diagnostic and cannot be an autonomous PASS. Full benchmark execution is not
+part of the test suite; `npm test` uses fixture events only.
 
 ## Install
 
