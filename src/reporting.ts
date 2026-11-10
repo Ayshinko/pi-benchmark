@@ -15,6 +15,12 @@ function na(v: unknown, fallback = "n/a"): string {
   return String(v);
 }
 
+/** Renders an efficiency value that may legitimately be "UNKNOWN". */
+function naFormat(value: unknown, format: (value: number) => string): string {
+  if (typeof value === "number" && Number.isFinite(value)) return format(value);
+  return value === "UNKNOWN" ? "UNKNOWN (not observable)" : "n/a";
+}
+
 function vuln(v: number | null | undefined): string {
   return v === null || v === undefined || !Number.isFinite(v) ? "n/a" : formatNumber(v);
 }
@@ -56,6 +62,18 @@ function visualFromOutcome(o: string, visual: VisualReport | null | undefined): 
 export function gates(result: RunResult): Gates {
   const o = result.outcome;
   const legacy = isLegacyResult(result);
+
+  if (result.endurance) {
+    const interrupted = o === "FAIL_AGENT" || o === "FAIL_LENGTH" || o === "FAIL_TIMEOUT";
+    const premature = result.endurance.telemetry.prematureStops > 0;
+    const resumed = Boolean(result.endurance.resumed);
+    return {
+      agent: interrupted || premature || resumed ? "FAIL" : "PASS",
+      compliance: result.endurance.evaluation.completed && result.endurance.scores?.autonomous !== "FAIL" ? "PASS" : "FAIL",
+      runtime: "N/A",
+      visual: "N/A",
+    };
+  }
 
   const agent = o === "FAIL_AGENT" || o === "FAIL_LENGTH" || o === "FAIL_TIMEOUT" ? "FAIL" : "PASS";
 
@@ -140,23 +158,87 @@ export function formatResultCard(run: RunResult): string {
   ];
 
   if (run.endurance) {
-    const e = run.endurance;
-    lines.splice(8, 0,
-      "Engineering and reliability",
-      row("Engineering score", `${e.scores.engineering}/100`),
-      row("Reliability score", String(e.scores.reliability)),
-      row("Autonomous", e.scores.autonomous),
-      row("Hidden tests", `${e.evaluation.passed}/${e.evaluation.total}`),
-      row("Phases", `${e.evaluation.phaseCompletion}/12`),
-      row("Premature stops", String(e.telemetry.prematureStops)),
-      row("Manual continuations", String(e.telemetry.manualContinuations)),
-      row("Compactions", String(e.telemetry.compactions)),
-      row("Active context peak", String(e.telemetry.activeContextPeak)),
-      "",
-    );
+    lines.splice(8, 0, ...enduranceSection(run));
   }
 
   return lines.join("\n");
+}
+
+/**
+ * Agent Endurance V3 report block: engineering, autonomous reliability, raw
+ * efficiency, phase evidence, independent evaluator results and the failure /
+ * recovery timeline. Secrets and environment values are never included.
+ */
+export function enduranceSection(run: RunResult): string[] {
+  const e = run.endurance!;
+  const t = e.telemetry;
+  const breakdown = e.scores.engineeringBreakdown ?? { hiddenTests: 0, featureCoverage: 0, integration: 0, integrity: 0 };
+  const lines: string[] = [
+    "Engineering and reliability",
+    row2("Overall", run.outcome === "PASS" ? "PASS" : run.outcome),
+    ...(e.resumed ? [row2("Resumed run", `DIAGNOSTIC (continues ${e.resumeOf ?? "unknown run"})`)] : []),
+    row2("Engineering score", `${e.scores.engineering}/100`),
+    row2("  hidden tests", `${(breakdown.hiddenTests * 100).toFixed(0)}%`),
+    row2("  feature coverage", `${(breakdown.featureCoverage * 100).toFixed(0)}%`),
+    row2("  integration", `${(breakdown.integration * 100).toFixed(0)}%`),
+    row2("  persistence/integrity", `${(breakdown.integrity * 100).toFixed(0)}%`),
+    row2("Reliability score", String(e.scores.reliability)),
+    row2("Autonomous", e.scores.autonomous),
+    "",
+    "Agent reliability (objective, from session events)",
+    row2("Premature stops", String(t.prematureStops)),
+    row2("Failed completion claim", String(t.failedCompletionClaim ?? false)),
+    row2("Manual continuations", String(t.manualContinuations)),
+    row2("Tool calls", String(t.toolCalls)),
+    row2("Tool failures", String(t.toolFailures)),
+    row2("Recovered failures", String(t.recoveries)),
+    row2("Invalid tool args", String(t.invalidToolArguments)),
+    row2("Malformed calls", String(t.malformedToolCalls)),
+    row2("Retries", String(t.retries)),
+    row2("Compactions", String(t.compactions)),
+    row2("Stop reasons", t.stopReasons || "n/a"),
+    row2("Workspace boundary hits", String(t.boundaryViolations)),
+    row2("Observed from", `${t.observation?.events ? "live events" : ""}${t.observation?.events && t.observation?.session ? " + " : ""}${t.observation?.session ? "session transcript" : ""}${!t.observation?.events && !t.observation?.session ? "no source available" : ""}`),
+    "",
+    "Efficiency (raw, not scored)",
+    row2("Wall", formatDuration(e.scores.efficiency.wallMs)),
+    row2("Cumulative output", naFormat(e.scores.efficiency.outputTokens, formatNumber)),
+    row2("Cumulative input", naFormat(e.scores.efficiency.inputTokens, formatNumber)),
+    row2("Active context peak", String(t.activeContextPeak)),
+    row2("Assistant turns", String(t.assistantTurns)),
+    row2("Tool calls", String(t.toolCalls)),
+    "",
+    "Independent evaluator",
+    row2("Hidden tests", `${e.evaluation.passed}/${e.evaluation.total}`),
+    row2("Evaluator version", `${e.evaluation.evaluatorVersion ?? "unknown"} (${shortSha(e.evaluation.evaluatorSha256)})`),
+    row2("Evaluator script", e.evaluation.evaluatorScript ?? "n/a"),
+    row2("Phases", `${e.evaluation.phaseCompletion}/12`),
+  ];
+  for (const phase of e.evaluation.phases ?? []) {
+    lines.push(row2(`  phase ${phase.phase}`, `${phase.status === "declared" ? "declared" : "MISSING"}  ${phase.label}`));
+  }
+  const failures = e.evaluation.details ?? [];
+  if (failures.length) {
+    lines.push("", "Hidden-test failures");
+    for (const failure of failures.slice(0, 8)) lines.push(`  ${failure}`);
+    if (failures.length > 8) lines.push(`  … ${failures.length - 8} more`);
+  }
+  if (t.boundarySamples?.length) {
+    lines.push("", "Boundary samples");
+    for (const sample of t.boundarySamples.slice(0, 4)) lines.push(`  ${sample}`);
+  }
+  const timeline = t.timeline ?? [];
+  if (timeline.length) {
+    lines.push("", "Failure and recovery timeline");
+    for (const entry of timeline.slice(-12)) {
+      lines.push(`  ${formatDuration(entry.atMs)}  ${entry.type}  ${entry.detail}`);
+    }
+  }
+  return lines;
+}
+
+function row2(key: string, value: string): string {
+  return `${key.padEnd(26)}${value}`;
 }
 
 /** Compact human output: 16800 -> 16.8k, 420 -> 420. */
@@ -217,6 +299,20 @@ export function formatAggregateCard(runs: RunResult[]): string {
     `Median Wall    ${fmtDur(median(walls))}`,
     `Avg Output     ${fmtK(avg(outs))}`,
   ];
+
+  const enduranceRuns = runs.filter((run) => run.endurance);
+  if (enduranceRuns.length) {
+    const engineering = enduranceRuns.map((run) => run.endurance!.scores.engineering);
+    const autonomous = enduranceRuns.map((run) => run.endurance!.scores.autonomous);
+    const hidden = enduranceRuns.map((run) => `${run.endurance!.evaluation.passed}/${run.endurance!.evaluation.total}`);
+    lines.push(
+      "",
+      `Engineering    ${engineering.map((value) => `${value}/100`).join(", ")}`,
+      `Autonomous     ${autonomous.join(", ")}`,
+      `Hidden tests   ${hidden.join(", ")}`,
+      `Resumed        ${enduranceRuns.filter((run) => run.endurance!.resumed).length} diagnostic run(s)`,
+    );
+  }
 
   if (failures.length) {
     lines.push("", "Failures");

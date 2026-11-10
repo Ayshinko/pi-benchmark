@@ -27,7 +27,8 @@ import { findArtifact } from "./artifact.ts";
 import { validateArtifact } from "./browser.ts";
 import { determineOutcome } from "./outcome.ts";
 import type { ArtifactReport, BrowserReport, ComplianceReport, RunResult } from "./types.ts";
-import { parseEnduranceEvents } from "./endurance-events.ts";
+import { parseEnduranceEvents, mergeEnduranceTelemetry } from "./endurance-events.ts";
+import { analyzeEnduranceSession } from "./endurance-session.ts";
 import { evaluateEndurance } from "./endurance-evaluator.ts";
 import { scoreEndurance } from "./endurance-scoring.ts";
 
@@ -56,6 +57,17 @@ export interface RunConfig {
    * even though extensions are disabled inside the benchmark session.
    */
   inheritedProviders?: Array<{ provider: string; config: any }>;
+  /**
+   * Diagnostic continuation of an earlier run. The source run is never modified:
+   * its workspace is copied into a fresh, uniquely named run and its transcript is
+   * forked into a new session. Resumed runs can never be an autonomous PASS.
+   */
+  resumeFrom?: { runId: string; workspace: string; sessionFile: string | null };
+  /**
+   * Optional base directory for agent workspaces (default: inside the run dir).
+   * Set PI_BENCHMARK_WORKSPACE_ROOT to keep workspaces out of the results tree.
+   */
+  workspaceRoot?: string;
 }
 
 /**
@@ -132,29 +144,56 @@ function slug(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_").toLowerCase();
 }
 
-export function buildRunPaths(cfg: RunConfig, timestamp: string): RunPaths {
+export function buildRunPaths(cfg: RunConfig, timestamp: string, resumeMarker?: string): RunPaths {
   const modelSlug = slug(`${cfg.model.provider}/${cfg.model.id}`);
+  // A resumed run gets its own directory name so it can never collide with, or
+  // overwrite, the run it was continued from.
+  const runName = `run-${String(cfg.runIndex).padStart(2, "0")}${resumeMarker ? `-${resumeMarker}` : ""}`;
   const runDir = path.join(
     cfg.benchRoot,
     cfg.benchmark,
     timestamp,
     modelSlug,
-    `run-${String(cfg.runIndex).padStart(2, "0")}`,
+    runName,
   );
+  const workspace = cfg.workspaceRoot
+    ? path.join(cfg.workspaceRoot, `${modelSlug}-${timestamp}-${runName}`)
+    : path.join(runDir, "workspace");
   return {
     runDir,
-    workspace: path.join(runDir, "workspace"),
+    workspace,
     sessionDir: path.join(runDir, "session"),
     screenshotPath: path.join(runDir, "screenshot.png"),
   };
 }
 
+function shortId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]/g, "").slice(-8) || "unknown";
+}
+
+/** Workspace placement honouring PI_BENCHMARK_WORKSPACE_ROOT when configured. */
+export function configuredWorkspaceRoot(): string | undefined {
+  const value = process.env.PI_BENCHMARK_WORKSPACE_ROOT;
+  return value && value.trim() ? path.resolve(value) : undefined;
+}
+
+const PHASE_COUNT = 12;
+
 export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   const startedAt = new Date();
   const timestamp = startedAt.toISOString().replace(/[:.]/g, "-");
-  const paths = buildRunPaths(cfg, timestamp);
+  const resumed = Boolean(cfg.resumeFrom);
+  const resumeMarker = resumed ? `resumed-${shortId(cfg.resumeFrom!.runId)}` : undefined;
+  const paths = buildRunPaths(cfg, timestamp, resumeMarker);
   fs.mkdirSync(paths.workspace, { recursive: true });
   fs.mkdirSync(paths.sessionDir, { recursive: true });
+
+  if (resumed) {
+    // Copy the source workspace so the original run stays untouched. Byte-for-byte
+    // copies keep the diagnostic run independent of the run it continues.
+    const skip = /[\\/](?:__pycache__|node_modules|[.]git)(?:[\\/]|$)/;
+    fs.cpSync(cfg.resumeFrom!.workspace, paths.workspace, { recursive: true, filter: (source) => !skip.test(source) });
+  }
 
   const metrics = new RunMetrics();
   let timedOut = false;
@@ -200,7 +239,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     });
     await resourceLoader.reload();
 
-    const sessionManager = SessionManager.create(paths.workspace, paths.sessionDir);
+    const sessionManager = resumed
+      ? SessionManager.forkFrom(cfg.resumeFrom!.sessionFile ?? "", paths.workspace, paths.sessionDir)
+      : SessionManager.create(paths.workspace, paths.sessionDir);
     sessionFile = sessionManager.getSessionFile() ?? null;
 
     // Reuse the already-resolved Pi provider configuration on the child session so
@@ -350,7 +391,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     visual: null,
   };
 
-  const isEndurance = cfg.benchmark === "agent-endurance-v3";
+  const isEndurance = cfg.benchmark === "agent-endurance-v3" || cfg.benchmark === "agent-endurance-v4";
   if (isEndurance) {
     browser.skipped = true;
     browser.errors.push("browser validation not applicable to Python benchmark");
@@ -394,18 +435,67 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
   let endurance: RunResult["endurance"];
   if (isEndurance) {
-    const evaluation = evaluateEndurance(paths.workspace);
-    const telemetry = parseEnduranceEvents(structuredEvents, evaluation.completed);
-    const scores = scoreEndurance(evaluation, telemetry, snapshot, false);
-    outcome = timedOut ? "FAIL_TIMEOUT" : harnessError ? "ERROR_HARNESS" : evaluation.completed ? "PASS" : "FAIL_COMPLIANCE";
-    reasons = evaluation.completed ? [] : evaluation.details.length ? evaluation.details : [`independent evaluator ${evaluation.passed}/${evaluation.total}; phases ${evaluation.phaseCompletion}/12`];
-    endurance = { evaluation, telemetry, scores, resumed: false, configuration: {
-      provider: cfg.model.provider, model: cfg.model.id, thinkingLevel: cfg.thinkingLevel,
-      contextWindow: cfg.model.contextWindow ?? "UNKNOWN", maxTokens: cfg.model.maxTokens ?? "UNKNOWN",
-    } };
+    const evaluation = evaluateEndurance(paths.workspace, { benchmarkVersion: cfg.promptVersion });
+    const session = analyzeEnduranceSession(sessionFile, paths.workspace, {
+      resumePromptText: resumed ? cfg.prompt : undefined,
+    });
+    const telemetry = mergeEnduranceTelemetry(
+      parseEnduranceEvents(structuredEvents, evaluation.completed),
+      session,
+      { completed: evaluation.completed, resumed, resumePromptText: resumed ? cfg.prompt : undefined },
+    );
+    const scores = scoreEndurance(evaluation, telemetry, snapshot, {
+      resumed,
+      interrupted: timedOut || snapshot.aborted,
+    });
+    const interrupted = timedOut || snapshot.aborted;
+    outcome = timedOut
+      ? "FAIL_TIMEOUT"
+      : harnessError
+        ? "ERROR_HARNESS"
+        : interrupted
+          ? "FAIL_AGENT"
+          : evaluation.completed && scores.autonomous === "PASS"
+            ? "PASS"
+            : "FAIL_COMPLIANCE";
+    reasons = [];
+    if (!evaluation.completed) {
+      reasons.push(
+        evaluation.details.length
+          ? evaluation.details.slice(0, 6).join("; ")
+          : `independent evaluator ${evaluation.passed}/${evaluation.total}; phases ${evaluation.phaseCompletion}/${PHASE_COUNT}`,
+      );
+    }
+    if (scores.autonomous === "FAIL") {
+      reasons.push(
+        `autonomous reliability FAIL (premature stops=${telemetry.prematureStops}, continuations=${telemetry.manualContinuations}, boundary violations=${telemetry.boundaryViolations})`,
+      );
+    }
+    if (resumed) reasons.push("resumed run is diagnostic: not eligible for an autonomous PASS");
+    endurance = {
+      evaluation,
+      telemetry,
+      scores,
+      resumed,
+      ...(resumed ? { resumeOf: cfg.resumeFrom!.runId } : {}),
+      sessionFile,
+      configuration: {
+        provider: cfg.model.provider,
+        model: cfg.model.id,
+        thinkingLevel: cfg.thinkingLevel,
+        contextWindow: cfg.model.contextWindow ?? "UNKNOWN",
+        maxTokens: cfg.model.maxTokens ?? "UNKNOWN",
+        timeoutMs: cfg.timeoutMs,
+        // Configuration snapshot deliberately contains no credentials or env values.
+        inheritedProviderCount: (cfg.inheritedProviders ?? []).length,
+      },
+    };
   }
 
   const modelSlug = slug(`${cfg.model.provider}/${cfg.model.id}`);
+
+  const idParts = [cfg.benchmark, timestamp, modelSlug, `run-${String(cfg.runIndex).padStart(2, "0")}`];
+  if (resumed) idParts.push(`resumed-${shortId(cfg.resumeFrom!.runId)}`);
 
   // Persist the exact prompt that was sent so every run is reproducible and the
   // hash can be re-verified byte-for-byte against the canonical asset.
@@ -413,7 +503,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   fs.writeFileSync(path.join(paths.runDir, "prompt.txt"), cfg.prompt, "utf8");
 
   return {
-    id: `${cfg.benchmark}-${timestamp}-${modelSlug}-run-${String(cfg.runIndex).padStart(2, "0")}`,
+    id: idParts.join("-"),
     benchmark: cfg.benchmark,
     benchmarkVersion: cfg.promptVersion,
     promptHash,

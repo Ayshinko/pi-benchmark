@@ -7,3 +7,7 @@ benchmarks/
 **/screenshot.png
 *.png
 **/workspace/
+
+# Python evaluator/workspace caches
+__pycache__/
+*.pyc

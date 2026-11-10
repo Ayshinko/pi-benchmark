@@ -24,6 +24,9 @@ const PAGODA_V1_TEXT = fs.readFileSync(
 const AGENT_ENDURANCE_V3_TEXT = fs.readFileSync(
   path.join(import.meta.dirname, "assets", "agent-endurance-v3.prompt.txt"), "utf8",
 );
+const AGENT_ENDURANCE_V4_TEXT = fs.readFileSync(
+  path.join(import.meta.dirname, "assets", "agent-endurance-v4.prompt.txt"), "utf8",
+);
 
 /**
  * SHA-256 over the exact bytes (UTF-8) of the given prompt text. This is the
@@ -43,6 +46,8 @@ export interface BenchmarkPrompt {
   name: string;
   prompt: string;
   expectedArtifact: string;
+  /** Default wall-clock budget for one run, in seconds (per-suite, not per-model). */
+  timeoutSeconds: number;
 }
 
 export const PAGODA_V1_PROMPT_TEXT = PAGODA_V1_TEXT;
@@ -53,20 +58,43 @@ export const PAGODA_V1: BenchmarkPrompt = {
   name: "Pagoda v1",
   prompt: PAGODA_V1_TEXT,
   expectedArtifact: "index.html",
+  timeoutSeconds: 1200,
 };
 export const AGENT_ENDURANCE_V3: BenchmarkPrompt = {
   benchmark: "agent-endurance-v3", version: "agent-endurance-v3", name: "Agent Endurance V3",
   prompt: AGENT_ENDURANCE_V3_TEXT, expectedArtifact: "warehouse/__init__.py",
+  // A 12-phase build needs far more wall time than a single-file artifact task.
+  timeoutSeconds: 10800,
 };
+export const AGENT_ENDURANCE_V4: BenchmarkPrompt = {
+  benchmark: "agent-endurance-v4", version: "agent-endurance-v4", name: "Agent Endurance V4",
+  prompt: AGENT_ENDURANCE_V4_TEXT, expectedArtifact: "warehouse/__init__.py",
+  timeoutSeconds: 10800,
+};
+
+/**
+ * Diagnostic continuation prompt for Agent Endurance V3 resume runs only.
+ *
+ * It is separately versioned so a resumed run never pretends it used the canonical
+ * benchmark prompt: the recorded `promptHash` is the hash of this text, and the run
+ * is flagged `resumed: true` (a resumed run cannot be an autonomous PASS).
+ */
+export const AGENT_ENDURANCE_V3_CONTINUATION_VERSION = "agent-endurance-v3.continuation-v1";
+export const AGENT_ENDURANCE_V3_CONTINUATION_PROMPT = `You are continuing the Agent Endurance V3 benchmark in the current workspace. This is a diagnostic continuation of an earlier run, not a fresh run.
+
+The canonical benchmark contract still applies (package "warehouse", WarehouseSystem, atomic multi-line operations, checksum persistence, argparse CLI, PHASES.md evidence, standard library only).
+
+Do not start over and do not delete existing work. Inspect the current artifacts, run the full test suite (python -m unittest discover -v), repair failing behaviour, and finish every phase that is still missing. Update PHASES.md with objective evidence for each completed phase and report what changed.`;
 
 export const PROMPTS: Record<string, BenchmarkPrompt> = {
   pagoda: PAGODA_V1,
   "agent-endurance-v3": AGENT_ENDURANCE_V3,
+  "agent-endurance-v4": AGENT_ENDURANCE_V4,
 };
 
-/** The single production benchmark suite currently shipped (pagoda-v1). */
+/** The production benchmark suites currently shipped (pagoda-v1 and agent-endurance-v3). */
 export function productionBenchmarks(): BenchmarkPrompt[] {
-  return [PAGODA_V1, AGENT_ENDURANCE_V3];
+  return [PAGODA_V1, AGENT_ENDURANCE_V3, AGENT_ENDURANCE_V4];
 }
 
 /**
@@ -80,7 +108,8 @@ export function resolveBenchmark(ref: string): BenchmarkPrompt {
     return PAGODA_V1;
   }
   if (["agent-endurance-v3", "endurance", "endurance-v3", "agent endurance v3"].includes(key)) return AGENT_ENDURANCE_V3;
-  throw new Error(`Unknown benchmark "${ref}". Available: pagoda-v1, agent-endurance-v3`);
+  if (["agent-endurance-v4", "endurance-v4", "agent endurance v4"].includes(key)) return AGENT_ENDURANCE_V4;
+  throw new Error(`Unknown benchmark "${ref}". Available: pagoda-v1, agent-endurance-v3, agent-endurance-v4`);
 }
 
 export function getPrompt(benchmark: string): BenchmarkPrompt {

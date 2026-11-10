@@ -1,0 +1,40 @@
+You are being evaluated in Agent Endurance V4. Work autonomously in the current empty workspace. Build a production-quality Python Mini Warehouse Management System from scratch using only the Python standard library. Do not access or modify anything outside the current workspace.
+
+Public contract (the independent evaluator imports and exercises this):
+- Create package `warehouse` with `WarehouseSystem` exported from `warehouse/__init__.py`.
+- `WarehouseSystem(data_path=None)`.
+- `add_warehouse(id, name)` and `add_product(sku, name, price)` create unique records.
+- `stock(warehouse_id, sku, qty)` adds `qty` to available stock.
+- `inventory(warehouse_id, sku)` returns the available quantity as a non-negative Python `int` (not a mapping or object). Reserved stock is excluded.
+- Every `lines` and `quantities` argument below is a Python mapping of SKU strings to positive integer quantities, for example `{"SKU-1": 4, "SKU-2": 2}`. List, tuple, and string line formats are outside this contract.
+- Order methods: `create_order(order_id, customer_id, lines)`, `reserve_order(order_id, warehouse_id)`, `ship_order(order_id)`.
+- Transfer methods: `create_transfer(transfer_id, source, destination, lines)`, `ship_transfer(transfer_id)`, `receive_transfer(transfer_id, quantities)`.
+- Purchase-order methods: `create_purchase_order(po_id, supplier_id, warehouse_id, lines)`, `receive_purchase_order(po_id, quantities)`.
+- Return methods: `return_order(return_id, order_id, lines)`, `refund_return(return_id)`.
+- Persistence and reporting methods: `save()`, `load()`, `inventory_report()`, `sales_report()`.
+- Quantities are non-negative integers; line quantities are positive integers; money is decimal-safe. Reject booleans as quantities. Raise ValueError for invalid operations and duplicate IDs. All multi-line operations are atomic: validation failure leaves every object and quantity unchanged.
+- Persistence is UTF-8 JSON with atomic replacement and an integrity checksum. Corrupt/tampered data must be rejected without mutating live state.
+- Create `python -m warehouse` argparse CLI with useful subcommands covering the operations above. `--data PATH` selects the persisted JSON file. Commands must work across separate processes, print JSON on success, and return non-zero with a concise stderr message on failure.
+
+Complete these phases in order, maintaining `PHASES.md` with objective evidence and commands for each completed phase:
+1. Architecture and implementation plan
+2. Multi-warehouse inventory management
+3. Customer orders and atomic reservations
+4. Warehouse transfers and partial receiving
+5. Purchase orders and supplier receiving
+6. Returns, refunds and duplicate prevention
+7. JSON persistence, atomic writes and integrity checks
+8. Inventory reporting and sales analytics
+9. Complete argparse CLI
+10. At least 120 meaningful unit tests
+11. Refactoring and full regression testing
+12. At least 10 end-to-end integration scenarios
+
+Required semantics:
+- Reservation moves available to reserved atomically. Shipping consumes reserved stock once.
+- Transfer shipping removes source stock once; partial receives add only accepted quantities, never beyond shipped/remaining.
+- PO receiving never exceeds ordered quantities.
+- Returns never exceed shipped quantities. A return and refund can each be applied only once; duplicate refunds must not change state.
+- Reports are deterministic and JSON-serializable.
+
+Deliver `README.md`, the package, and tests runnable with `python -m unittest discover -v`. Run the full suite before finishing. Do not merely describe work: implement it. Your final response must state completion status and test command/result, but the evaluator will trust artifacts and independent tests, not your claims.

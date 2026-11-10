@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import fs from "node:fs"; import os from "node:os"; import path from "node:path";
-import { AGENT_ENDURANCE_V3, hashPrompt, productionBenchmarks, resolveBenchmark } from "../src/prompts.ts";
+import { AGENT_ENDURANCE_V3, AGENT_ENDURANCE_V4, hashPrompt, productionBenchmarks, resolveBenchmark } from "../src/prompts.ts";
 import { buildRunPaths } from "../src/runner.ts";
 import { parseEnduranceEvents } from "../src/endurance-events.ts";
 import { scoreEndurance } from "../src/endurance-scoring.ts";
+import { gates } from "../src/reporting.ts";
 
 assert.equal(resolveBenchmark("endurance").version, "agent-endurance-v3");
 assert(productionBenchmarks().some((x) => x.benchmark === "agent-endurance-v3"));
+assert.equal(resolveBenchmark("endurance-v4").version, "agent-endurance-v4");
+assert.match(AGENT_ENDURANCE_V4.prompt, /returns the available quantity as a non-negative Python `int`/);
+assert.match(AGENT_ENDURANCE_V4.prompt, /mapping of SKU strings to positive integer quantities/);
 assert.equal(hashPrompt(AGENT_ENDURANCE_V3.prompt).length, 64);
 assert.match(AGENT_ENDURANCE_V3.prompt, /120 meaningful unit tests/);
 const cfg:any={benchmark:"agent-endurance-v3",model:{provider:"p",id:"m"},runIndex:1,benchRoot:"X"};
@@ -16,9 +20,21 @@ const tel=parseEnduranceEvents([
   {type:"tool_execution_end",isError:false,toolName:"write",atMs:2},
   {type:"context_compaction",atMs:3},{type:"message_end",stopReason:"stop",atMs:4},
 ],false);
-assert.equal(tel.toolFailures,1); assert.equal(tel.recoveries,1); assert.equal(tel.compactions,1); assert.equal(tel.prematureStops,1);
+assert.equal(tel.toolFailures,1); assert.equal(tel.recoveries,1); assert.equal(tel.compactions,1); assert.equal(tel.prematureStops,0); assert.equal(tel.failedCompletionClaim,true);
+const malformed=parseEnduranceEvents([{
+  type:"message_end",atMs:5,message:{role:"assistant",stopReason:"stop",content:[
+    {type:"thinking",thinking:"write the CLI"},
+    {type:"text",text:"<tool_call>\n<functionwrite>\n<parameter=path>\nwarehouse/__main__.py\n</parameter>\n</function>\n</tool_call>"},
+  ]},
+}],false);
+assert.equal(malformed.malformedToolCalls,1);
+assert.equal(malformed.prematureStops,0);
+assert.equal(malformed.failedCompletionClaim,true);
+assert.equal(malformed.timeline[0].type,"malformed_tool_call");
 const scores=scoreEndurance({passed:9,total:9,categories:{},phaseCompletion:12,completed:true,details:[]},{...tel,manualContinuations:1},{wallMs:10,outputTokens:20},false);
 assert.notEqual(scores.reliability,100); assert.equal(scores.autonomous,"FAIL");
+const enduranceRun:any={outcome:"FAIL_COMPLIANCE",compliance:null,browser:{attempted:false},visual:null,endurance:{evaluation:{completed:false},telemetry:{prematureStops:1}}};
+assert.deepEqual(gates(enduranceRun),{agent:"FAIL",compliance:"FAIL",runtime:"N/A",visual:"N/A"});
 const root=fs.mkdtempSync(path.join(os.tmpdir(),"endurance-store-"));
 process.env.PI_BENCHMARK_DIR=root;
 const runDir=path.join(root,"r"); fs.mkdirSync(runDir,{recursive:true});
