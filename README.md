@@ -309,6 +309,12 @@ during this benchmark. This benchmark does not technically lock the server. Cont
 Pagoda v1 · Run 1/3: elapsed 3m21s | out 8.2k | taskAvg 49.2 tok/s | live 51.1 tok/s | turns 2 | tools 2 | state generating
 ```
 
+Meaningful child-session events are also appended, in order, to the normal parent conversation:
+agent messages, top-level tool starts/results, retries/recoveries, validation phases, and periodic
+TPS snapshots. These are durable custom session entries, not messages, so they neither enter the
+evaluated model context nor trigger an LLM turn. Long tool output is concise until Pi's normal
+transcript expansion is enabled.
+
 ## What is measured
 
 | Metric | Definition |
@@ -328,9 +334,16 @@ Pagoda v1 · Run 1/3: elapsed 3m21s | out 8.2k | taskAvg 49.2 tok/s | live 51.1 
 
 ## Result card
 
-After every run a report is sent directly into the conversation (no need to open JSON/session
-files). For multiple runs a concise aggregate card follows (mean/median TPS & wall, pass rate,
-per-run rows). Unavailable data shows `n/a`, never a literal `undefined`.
+After every run a durable report is appended directly to the conversation (no need to open
+JSON/session files). For multiple runs a concise aggregate card follows (mean/median TPS & wall,
+pass rate, per-run rows). Unavailable data shows `n/a`, never a literal `undefined`.
+
+Pagoda then appends the actual saved `screenshot.png`. Pi TUI renders it inline when the terminal
+advertises Kitty or iTerm2 graphics and `terminal.showImages` is enabled; other terminals show the
+working filename fallback. The currently installed pi-web does not render extension custom-entry
+renderers (and filters custom entries from its default chat view), so it cannot display this image
+inline without pi-web support. The benchmark deliberately does not substitute a context-bearing
+image message, because that would feed presentation data to the model.
 
 ## Storage
 

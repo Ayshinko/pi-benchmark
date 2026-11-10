@@ -32,6 +32,7 @@ import { liveLine, formatTable, formatRunDetail, formatTps } from "./src/format.
 import { formatResultCard, formatAggregateCard } from "./src/reporting.ts";
 import { ThrottledStatus } from "./src/status.ts";
 import { BENCH_ROOT, loadRuns, latestRuns, findRun, saveRun, fairComparisonIssues } from "./src/store.ts";
+import { BENCHMARK_ENTRY, imageTitle, isReadablePng, renderBenchmarkEntry, type BenchmarkTranscriptEntry } from "./src/transcript.ts";
 import {
   parseBenchmarkInvocation,
   pickRunCountInteractive,
@@ -219,6 +220,9 @@ export async function executeBenchmark(
   const prompt = resumed ? AGENT_ENDURANCE_V3_CONTINUATION_PROMPT : task.prompt;
   const promptVersion = resumed ? AGENT_ENDURANCE_V3_CONTINUATION_VERSION : task.version;
   const results: any[] = [];
+  let sequence = 0;
+  const emit = (entry: Omit<BenchmarkTranscriptEntry, "sequence">) =>
+    pi.appendEntry<BenchmarkTranscriptEntry>(BENCHMARK_ENTRY, { ...entry, sequence: ++sequence });
   const status = new ThrottledStatus((text) => ctx.ui.setStatus("pi-benchmark", text));
   const startedAt = Date.now();
   let currentRun = 1;
@@ -227,6 +231,8 @@ export async function executeBenchmark(
   for (let index = 1; index <= plan.runs; index++) {
     currentRun = index;
     status.update({ run: index, runs: plan.runs, elapsedMs: Date.now() - startedAt, phase: "other" });
+    emit({ kind: "start", run: index, atMs: Date.now() - startedAt, title: `${task.name} · run ${index}/${plan.runs}`, text: `${modelLabel(ctx, plan.model)} · thinking ${plan.thinking}`, status: "running" });
+    let lastMetricsEntryAt = 0;
 
     const result = await run({
       benchmark: task.benchmark,
@@ -256,7 +262,21 @@ export async function executeBenchmark(
         const avg = line.match(/taskAvg\s+([\d.]+)/i);
         const pp = line.match(/PP\s+([\d.]+)/i);
         status.update({ run: index, runs: plan.runs, elapsedMs: Date.now() - startedAt, phase, liveTps: live ? Number(live[1]) : undefined, averageTps: avg ? Number(avg[1]) : undefined, ppTps: pp ? Number(pp[1]) : undefined, fallback: /estimated|mixed/i.test(line) });
+        const now = Date.now();
+        if (now - lastMetricsEntryAt >= 15000) {
+          lastMetricsEntryAt = now;
+          emit({ kind: "metrics", run: index, atMs: now - startedAt, title: "Live benchmark metrics", text: line, status: "running" });
+        }
       },
+      onTranscriptEvent: (event) => emit({
+        kind: event.kind === "tool_start" || event.kind === "tool_end" ? "tool" : event.kind === "recovery" ? "phase" : event.kind,
+        run: index,
+        atMs: event.atMs,
+        title: event.title,
+        text: event.text,
+        expandedText: event.expandedText,
+        status: event.isError ? "error" : event.kind === "tool_end" || event.kind === "recovery" ? "ok" : "running",
+      }),
     });
 
     save(result);
@@ -265,12 +285,13 @@ export async function executeBenchmark(
       `${task.name} run ${index}: ${result.outcome} - ${formatTps(result.metrics.weightedTps)}`,
       result.outcome === "PASS" ? "success" : "warning",
     );
-    // Exactly ONE detailed result card per run.
-    pi.sendMessage({
-      customType: "artifact-bench-report",
-      content: formatResultCard(result),
-      display: true,
-    });
+    // Durable and excluded from model context. It also re-renders after session reload.
+    emit({ kind: "result", run: index, atMs: Date.now() - startedAt, title: `${task.name} final result · ${result.outcome}`, text: formatResultCard(result), status: result.outcome === "PASS" ? "ok" : "error" });
+    const screenshot = result.browser?.screenshotPath;
+    if (task.benchmark === "pagoda") {
+      const valid = isReadablePng(screenshot);
+      emit({ kind: "image", run: index, atMs: Date.now() - startedAt, title: screenshot ? imageTitle(screenshot) : "Pagoda final browser screenshot", text: valid ? screenshot : `Screenshot unavailable or invalid: ${screenshot ?? "no screenshot was captured"}`, imagePath: screenshot ?? undefined, status: valid ? "ok" : "error" });
+    }
   }
 
   clearInterval(elapsedTimer);
@@ -279,11 +300,7 @@ export async function executeBenchmark(
   // A single run already got its one detailed card above, so repeating it here
   // would duplicate the card.
   if (results.length > 1) {
-    pi.sendMessage({
-      customType: "artifact-bench-report",
-      content: formatAggregateCard(results),
-      display: true,
-    });
+    emit({ kind: "result", run: plan.runs, atMs: Date.now() - startedAt, title: `${task.name} aggregate result`, text: formatAggregateCard(results), status: results.every((result) => result.outcome === "PASS") ? "ok" : "error" });
   }
 }
 
@@ -298,6 +315,10 @@ function toWizardUI(ctx: ExtensionContext): WizardUI {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.registerEntryRenderer<BenchmarkTranscriptEntry>(BENCHMARK_ENTRY, (entry, options, theme) =>
+    renderBenchmarkEntry(entry.data ?? { kind: "error", run: 0, sequence: 0, atMs: 0, title: "Invalid benchmark entry", status: "error" }, options.expanded, theme));
+
+  // Backward compatibility for result messages written by older releases.
   pi.registerMessageRenderer("artifact-bench-report", (message, options, theme) => {
     const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
     box.addChild(new Text(message.content ?? "", 0, 0));

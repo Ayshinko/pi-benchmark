@@ -34,6 +34,7 @@ import { analyzeEnduranceSession } from "./endurance-session.ts";
 import { evaluateEndurance } from "./endurance-evaluator.ts";
 import { scoreEndurance } from "./endurance-scoring.ts";
 import { captureIntegrity, compareIntegrity } from "./integrity.ts";
+import { compactJson, summarizeToolResult, type BenchmarkForwardEvent } from "./transcript.ts";
 
 export interface RunConfig {
   benchmark: string;
@@ -52,6 +53,8 @@ export interface RunConfig {
   fake?: boolean;
   fakeArtifactPath?: string;
   onProgress?: (line: string) => void;
+  /** Ordered, read-only projection of child-session activity for the parent transcript. */
+  onTranscriptEvent?: (event: BenchmarkForwardEvent) => void;
   signal?: AbortSignal;
   /**
    * Provider configurations already resolved by the parent Pi process (from
@@ -237,6 +240,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   let nativeCompleted = 0;
 
   metrics.start();
+  const forward = (event: Omit<BenchmarkForwardEvent, "atMs"> & { atMs?: number }) =>
+    cfg.onTranscriptEvent?.({ ...event, atMs: event.atMs ?? metrics.elapsedMs() });
+  forward({ kind: "phase", title: "Preparing isolated benchmark workspace" });
 
   if (cfg.fake) {
     // Harness self-test: pretend an agent wrote the artifact, so the whole
@@ -244,6 +250,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     // runs without spending model tokens.
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     fs.copyFileSync(cfg.fakeArtifactPath!, path.join(paths.workspace, cfg.expectedArtifact));
+    forward({ kind: "assistant", title: "Agent progress", text: "Creating the benchmark artifact from the fixture." });
     metrics.beginAssistantMessage();
     await sleep(1200); // prefill
     metrics.contentStarted();
@@ -251,6 +258,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     metrics.endAssistantMessage({ output: 1200, input: 500, cacheRead: 0, cacheWrite: 0, cost: { total: 0.05 } }, "toolUse");
     await sleep(1500); // tool execution
     metrics.toolCall(false);
+    forward({ kind: "tool_end", title: "write completed", text: cfg.expectedArtifact });
     metrics.beginAssistantMessage();
     await sleep(800);
     metrics.contentStarted();
@@ -314,6 +322,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     });
 
     const unsubscribe = session.subscribe((event: any) => {
+      // Codemode nested tools belong to the one visible top-level codemode call.
+      // Counting both levels would inflate tool and error metrics.
+      if (event.parentToolCallId && /^tool_execution_/.test(String(event.type))) return;
       structuredEvents.push({ ...event, atMs: metrics.elapsedMs() });
       if (event.type === "message_start" && event.message?.role === "assistant") {
         metrics.beginAssistantMessage();
@@ -351,6 +362,17 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
           }).catch(() => undefined));
         }
         cfg.onProgress?.(liveLine(metrics.snapshot()));
+        const assistantText = (Array.isArray(event.message.content) ? event.message.content : [])
+          .filter((part: any) => part?.type === "text")
+          .map((part: any) => String(part.text ?? ""))
+          .join("\n").trim();
+        if (assistantText) forward({
+          kind: "assistant",
+          title: `Agent message · ${reason}`,
+          text: assistantText.length > 600 ? `${assistantText.slice(0, 600)}…` : assistantText,
+          expandedText: assistantText.length > 600 ? assistantText : undefined,
+          isError: reason === "error" || reason === "aborted",
+        });
         if (cfg.maxTurns && metrics.snapshot().assistantTurnsCompleted >= cfg.maxTurns) {
           turnBudgetExceeded = true;
           metrics.markAborted();
@@ -358,9 +380,26 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
         }
       } else if (event.type === "tool_execution_start") {
         cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
+        forward({ kind: "tool_start", title: `${event.toolName} running`, text: compactJson(event.args) });
       } else if (event.type === "tool_execution_end") {
         metrics.toolCall(Boolean(event.isError));
         cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
+        const summary = summarizeToolResult(event.result);
+        forward({
+          kind: "tool_end",
+          title: `${event.toolName} ${event.isError ? "failed" : "completed"}`,
+          text: summary.short,
+          expandedText: summary.full,
+          isError: Boolean(event.isError),
+        });
+      } else if (event.type === "compaction_start") {
+        forward({ kind: "phase", title: "Context compaction started" });
+      } else if (event.type === "compaction_end") {
+        forward({ kind: event.errorMessage ? "error" : "recovery", title: event.errorMessage ? "Context compaction failed" : "Context compaction completed", text: event.errorMessage });
+      } else if (event.type === "auto_retry_start") {
+        forward({ kind: "error", title: `Automatic retry ${event.attempt ?? ""}`.trim(), text: event.error ?? event.errorMessage });
+      } else if (event.type === "auto_retry_end") {
+        forward({ kind: event.success ? "recovery" : "error", title: event.success ? "Automatic retry recovered" : "Automatic retry failed", text: event.finalError });
       }
     });
 
@@ -399,6 +438,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     agentMs = metrics.elapsedMs();
   } catch (error) {
     harnessError = `session failed: ${(error as Error).message}`;
+    forward({ kind: "error", title: "Benchmark session failed", text: (error as Error).message, isError: true });
   }
   }
 
@@ -414,6 +454,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   };
 
   const artifact = findArtifact(paths.workspace, cfg.expectedArtifact);
+  forward({ kind: "phase", title: artifact.found ? "Artifact discovered" : "Artifact discovery failed", text: artifact.path ?? cfg.expectedArtifact, isError: !artifact.found });
 
   const browser: BrowserReport = {
     attempted: false,
@@ -445,6 +486,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     browser.errors.push("browser validation disabled by --no-browser");
   } else if (artifact.found) {
     cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
+    forward({ kind: "phase", title: "Running browser validation and screenshot capture" });
     const report = await validateArtifact({
       htmlPath: artifact.path!,
       screenshotPath: paths.screenshotPath,
@@ -480,6 +522,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
   let endurance: RunResult["endurance"];
   if (isEndurance) {
+    forward({ kind: "phase", title: "Running independent hidden evaluator" });
     const evaluation = evaluateEndurance(paths.workspace, { benchmarkVersion: cfg.promptVersion });
     const evaluatorOutputPath = path.join(paths.runDir, "evaluator.json");
     fs.writeFileSync(evaluatorOutputPath, JSON.stringify(evaluation, null, 2), "utf8");

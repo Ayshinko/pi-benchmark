@@ -52,10 +52,12 @@ function check(name: string, condition: boolean, detail = ""): void {
 function loadExtensionCli() {
   const commands = new Map<string, any>();
   const renderers: string[] = [];
+  const entryRenderers: string[] = [];
   const sent: any[] = [];
   const fakePi = {
     registerCommand: (name: string, def: any) => commands.set(name, def),
     registerMessageRenderer: (type: string) => renderers.push(type),
+    registerEntryRenderer: (type: string) => entryRenderers.push(type),
     registerTool: () => {},
     registerShortcut: () => {},
     registerFlag: () => {},
@@ -65,7 +67,7 @@ function loadExtensionCli() {
   const mod = jiti("../index.ts");
   const factory = mod.default ?? mod;
   factory(fakePi);
-  return { commands, renderers, sent };
+  return { commands, renderers, entryRenderers, sent };
 }
 
 function fakeCtx(overrides: Record<string, any> = {}) {
@@ -94,8 +96,9 @@ function fakeCtx(overrides: Record<string, any> = {}) {
  * ------------------------------------------------------------------ */
 console.log("\n[registration]");
 {
-  const { commands, renderers } = loadExtensionCli();
+  const { commands, renderers, entryRenderers } = loadExtensionCli();
   check("registerMessageRenderer called", renderers.includes("artifact-bench-report"), renderers.join(","));
+  check("model-invisible benchmark entry renderer registered", entryRenderers.includes("pi-benchmark-transcript"), entryRenderers.join(","));
   check("/benchmark command registered", commands.has("benchmark"));
   check("/artifact-bench still registered (backward compat)", commands.has("artifact-bench"));
   check("/artifact-bench has a handler", typeof commands.get("artifact-bench").handler === "function");
@@ -499,7 +502,7 @@ console.log("\n[early-failure gates]");
 }
 
 /* ------------------------------------------------------------------ *
- * 14c. executeBenchmark emits one card / run + one aggregate (no duplicates)
+ * 14c. executeBenchmark emits durable model-invisible transcript entries
  * ------------------------------------------------------------------ */
 console.log("\n[result card emission]");
 {
@@ -508,7 +511,8 @@ console.log("\n[result card emission]");
 
   async function capture(runs: number) {
     const sent: any[] = [];
-    const pi = { sendMessage: (m: any) => sent.push(m) };
+    const entries: any[] = [];
+    const pi = { sendMessage: (m: any) => sent.push(m), appendEntry: (customType: string, data: any) => entries.push({ customType, data }) };
     const ctx = fakeCtx({
       ui: {
         notify: () => {}, setStatus: () => {}, select: async () => undefined, input: async () => undefined, confirm: async () => true,
@@ -517,34 +521,43 @@ console.log("\n[result card emission]");
     const callArgs: unknown[][] = [];
     const fakeRun = async (cfg: any) => {
       callArgs.push(Object.entries(cfg).map(([k, v]) => [k, v]));
+      cfg.onTranscriptEvent?.({ kind: "assistant", atMs: 10, title: "Agent message", text: "working" });
+      cfg.onTranscriptEvent?.({ kind: "tool_start", atMs: 20, title: "bash running", text: "tests" });
+      cfg.onTranscriptEvent?.({ kind: "tool_end", atMs: 30, title: "bash completed", text: "12 passed" });
       return runResult(cfg.runIndex);
     };
     await executeBenchmark(pi as any, ctx, {
       benchmarkKey: "pagoda", model: ctx.model, thinking: "low",
       runs, timeoutSeconds: 1200, browser: true, settleMs: 3000, fake: false,
     }, { run: fakeRun as any, save: (async () => {}) as any });
-    return { sent, runs: callArgs.length };
+    return { sent, entries, runs: callArgs.length };
   }
 
   // Single run -> exactly ONE card, and it's a detailed result card (not an aggregate).
   {
-    const { sent, runs } = await capture(1);
-    check("single run emitted exactly one message", sent.length === 1, `got ${sent.length}`);
+    const { sent, entries, runs } = await capture(1);
+    const cards = entries.filter((entry) => entry.data.kind === "result");
+    check("single run emitted one durable result", cards.length === 1, `got ${cards.length}`);
+    check("result uses non-context custom entry", entries.every((entry) => entry.customType === "pi-benchmark-transcript"));
+    check("no model-context messages were added", sent.length === 0, `got ${sent.length}`);
     check("single run ran the benchmark once", runs === 1, `got ${runs}`);
-    check("single run card is a result card (not aggregate)", !!(sent[0]?.content?.includes("Pagoda v1 Benchmark") && !sent[0]?.content?.includes("Runs")));
+    check("single run card is a result card (not aggregate)", !!(cards[0]?.data?.text?.includes("Pagoda v1 Benchmark") && !cards[0]?.data?.text?.includes("Runs")));
+    check("Pagoda appends screenshot entry after result", entries.findIndex((entry) => entry.data.kind === "image") > entries.findIndex((entry) => entry.data.kind === "result"));
+    check("invalid screenshot has an explicit fallback", entries.some((entry) => entry.data.kind === "image" && entry.data.status === "error" && entry.data.text.includes("unavailable or invalid")));
+    check("forwarded events preserve child order", entries.filter((entry) => ["assistant", "tool"].includes(entry.data.kind)).map((entry) => entry.data.atMs).join(",") === "10,20,30");
   }
 
   // Three runs -> ONE detailed card per run PLUS one aggregate, no duplicates.
   {
-    const { sent, runs } = await capture(3);
-    const cards = sent.filter((m) => m?.content?.includes("Pagoda v1 Benchmark"));
-    const aggs = sent.filter((m) => m?.content?.startsWith("Pagoda v1 ") && m?.content?.includes("Runs"));
-    check("three runs emitted 4 messages (3 cards + 1 aggregate)", sent.length === 4, `got ${sent.length}`);
+    const { sent, entries, runs } = await capture(3);
+    const cards = entries.filter((entry) => entry.data.kind === "result" && entry.data.title.includes("final result"));
+    const aggs = entries.filter((entry) => entry.data.kind === "result" && entry.data.title.includes("aggregate"));
+    check("three runs emitted no model-context messages", sent.length === 0, `got ${sent.length}`);
     check("three runs emitted exactly 3 detailed cards", cards.length === 3, `got ${cards.length}`);
     check("three runs emitted exactly 1 aggregate card", aggs.length === 1, `got ${aggs.length}`);
-    check("aggregate is not a repeat of all detail cards", !(aggs[0]?.content || "").includes("Task Avg"));
+    check("aggregate is not a repeat of all detail cards", !(aggs[0]?.data?.text || "").includes("Task Avg"));
     check("three runs ran the benchmark three times", runs === 3, `got ${runs}`);
-    check("no duplicate result card", new Set(sent.map((m) => m.content)).size === sent.length);
+    check("result sequences preserve append order", entries.every((entry, i) => entry.data.sequence === i + 1));
   }
 }
 
