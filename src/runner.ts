@@ -11,6 +11,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -31,6 +33,7 @@ import { parseEnduranceEvents, mergeEnduranceTelemetry } from "./endurance-event
 import { analyzeEnduranceSession } from "./endurance-session.ts";
 import { evaluateEndurance } from "./endurance-evaluator.ts";
 import { scoreEndurance } from "./endurance-scoring.ts";
+import { captureIntegrity, compareIntegrity } from "./integrity.ts";
 
 export interface RunConfig {
   benchmark: string;
@@ -68,6 +71,10 @@ export interface RunConfig {
    * Set PI_BENCHMARK_WORKSPACE_ROOT to keep workspaces out of the results tree.
    */
   workspaceRoot?: string;
+  /** Hard cap on completed assistant turns. */
+  maxTurns?: number;
+  /** Fixed rev2 continuation budget; zero is diagnostic no-continuation mode. */
+  continuationLimit?: number;
 }
 
 /**
@@ -156,8 +163,14 @@ export function buildRunPaths(cfg: RunConfig, timestamp: string, resumeMarker?: 
     modelSlug,
     runName,
   );
-  const workspace = cfg.workspaceRoot
-    ? path.join(cfg.workspaceRoot, `${modelSlug}-${timestamp}-${runName}`)
+  const rev2Root = cfg.benchmark === "agent-endurance-v5" && process.platform === "win32"
+    ? "C:\\AI\\Scratch\\pi-agent-benchmarks"
+    : undefined;
+  const workspaceRoot = cfg.workspaceRoot ?? rev2Root;
+  const workspace = workspaceRoot
+    ? cfg.benchmark === "agent-endurance-v5"
+      ? path.join(workspaceRoot, modelSlug, `${timestamp}-${randomBytes(4).toString("hex")}`)
+      : path.join(workspaceRoot, `${modelSlug}-${timestamp}-${runName}`)
     : path.join(runDir, "workspace");
   return {
     runDir,
@@ -178,6 +191,20 @@ export function configuredWorkspaceRoot(): string | undefined {
 }
 
 const PHASE_COUNT = 12;
+const REV2_CONTINUATION = "Continue working on the remaining phases. Do not restart completed work.";
+
+function rev2CompletionGate(workspace: string): boolean {
+  if (!fs.existsSync(path.join(workspace, "DONE.md"))) return false;
+  const env = { PATH: process.env.PATH ?? "", PYTHONHASHSEED: "0", WMS_NOW: "2026-01-02T03:04:05+00:00" };
+  const help = spawnSync(process.platform === "win32" ? "python" : "python3", ["-m", "wms", "--help"], {
+    cwd: workspace, env, timeout: 30000, windowsHide: true,
+  });
+  if (help.status !== 0) return false;
+  const tests = spawnSync(process.platform === "win32" ? "python" : "python3", ["-m", "unittest", "discover", "-s", "tests"], {
+    cwd: workspace, env, timeout: 180000, windowsHide: true,
+  });
+  return tests.status === 0;
+}
 
 export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   const startedAt = new Date();
@@ -185,6 +212,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   const resumed = Boolean(cfg.resumeFrom);
   const resumeMarker = resumed ? `resumed-${shortId(cfg.resumeFrom!.runId)}` : undefined;
   const paths = buildRunPaths(cfg, timestamp, resumeMarker);
+  const integrityBefore = cfg.benchmark === "agent-endurance-v5"
+    ? captureIntegrity(cfg.agentDir, path.resolve(import.meta.dirname, ".."))
+    : null;
   fs.mkdirSync(paths.workspace, { recursive: true });
   fs.mkdirSync(paths.sessionDir, { recursive: true });
 
@@ -197,6 +227,8 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
   const metrics = new RunMetrics();
   let timedOut = false;
+  let turnBudgetExceeded = false;
+  let continuationsSent = 0;
   let harnessError: string | null = null;
   let agentMs = 0;
   let sessionFile: string | null = null;
@@ -319,6 +351,11 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
           }).catch(() => undefined));
         }
         cfg.onProgress?.(liveLine(metrics.snapshot()));
+        if (cfg.maxTurns && metrics.snapshot().assistantTurnsCompleted >= cfg.maxTurns) {
+          turnBudgetExceeded = true;
+          metrics.markAborted();
+          session.abort().catch(() => undefined);
+        }
       } else if (event.type === "tool_execution_start") {
         cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
       } else if (event.type === "tool_execution_end") {
@@ -342,6 +379,14 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
     try {
       await session.prompt(cfg.prompt);
+      if (cfg.benchmark === "agent-endurance-v5") {
+        const limit = Math.max(0, Math.min(3, cfg.continuationLimit ?? 3));
+        while (!turnBudgetExceeded && !timedOut && continuationsSent < limit && !rev2CompletionGate(paths.workspace)) {
+          continuationsSent++;
+          structuredEvents.push({ type: "manual_continuation", atMs: metrics.elapsedMs(), reason: "completion gate failed", index: continuationsSent });
+          await session.prompt(REV2_CONTINUATION);
+        }
+      }
     } finally {
       clearTimeout(timer);
       if (cfg.signal) cfg.signal.removeEventListener("abort", onOuterAbort);
@@ -391,7 +436,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     visual: null,
   };
 
-  const isEndurance = cfg.benchmark === "agent-endurance-v3" || cfg.benchmark === "agent-endurance-v4";
+  const isEndurance = ["agent-endurance-v3", "agent-endurance-v4", "agent-endurance-v5"].includes(cfg.benchmark);
   if (isEndurance) {
     browser.skipped = true;
     browser.errors.push("browser validation not applicable to Python benchmark");
@@ -444,12 +489,20 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
       session,
       { completed: evaluation.completed, resumed, resumePromptText: resumed ? cfg.prompt : undefined },
     );
+    const rev2GatePassed = cfg.benchmark === "agent-endurance-v5" ? rev2CompletionGate(paths.workspace) : evaluation.completed;
+    if (cfg.benchmark === "agent-endurance-v5") {
+      const stopCount = session.available ? session.stopReasons.stop : Number(/stop=(\d+)/.exec(telemetry.stopReasons)?.[1] ?? 0);
+      telemetry.prematureStops = rev2GatePassed ? Math.max(0, stopCount - 1) : stopCount;
+      telemetry.failedCompletionClaim = !rev2GatePassed && stopCount > 0;
+    }
     const scores = scoreEndurance(evaluation, telemetry, snapshot, {
       resumed,
       interrupted: timedOut || snapshot.aborted,
     });
     const interrupted = timedOut || snapshot.aborted;
-    outcome = timedOut
+    outcome = turnBudgetExceeded
+      ? "BUDGET_EXCEEDED"
+      : timedOut
       ? "FAIL_TIMEOUT"
       : harnessError
         ? "ERROR_HARNESS"
@@ -472,13 +525,39 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
       );
     }
     if (resumed) reasons.push("resumed run is diagnostic: not eligible for an autonomous PASS");
+    const integrityChanged = integrityBefore
+      ? compareIntegrity(integrityBefore, captureIntegrity(cfg.agentDir, path.resolve(import.meta.dirname, "..")))
+      : [];
+    if (cfg.benchmark === "agent-endurance-v5" && telemetry.boundarySamples.some((sample) => /evaluators|hidden/i.test(sample))) {
+      integrityChanged.push("hidden evaluator access recorded in tool-call log");
+    }
+    if (integrityChanged.length) {
+      outcome = "FAIL_AGENT";
+      reasons.unshift(`integrity violation: ${integrityChanged.join(", ")}`);
+    }
     endurance = {
+      status: integrityChanged.length
+        ? "INTEGRITY_VIOLATION"
+        : resumed
+        ? "RESUMED"
+        : turnBudgetExceeded || timedOut
+          ? "BUDGET_EXCEEDED"
+          : harnessError
+            ? "CRASHED"
+            : evaluation.completed && continuationsSent === 0
+              ? "AUTONOMOUS_PASS"
+              : evaluation.completed
+                ? "PASS_WITH_CONTINUATION"
+                : evaluation.passed > 0
+                  ? "PARTIAL"
+                  : "FAILED",
       evaluation,
       telemetry,
       scores,
       resumed,
       ...(resumed ? { resumeOf: cfg.resumeFrom!.runId } : {}),
       sessionFile,
+      integrity: { ok: integrityChanged.length === 0, changedPaths: integrityChanged },
       configuration: {
         provider: cfg.model.provider,
         model: cfg.model.id,
@@ -486,6 +565,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
         contextWindow: cfg.model.contextWindow ?? "UNKNOWN",
         maxTokens: cfg.model.maxTokens ?? "UNKNOWN",
         timeoutMs: cfg.timeoutMs,
+        maxTurns: cfg.maxTurns ?? "UNKNOWN",
+        continuationLimit: cfg.continuationLimit ?? (cfg.benchmark === "agent-endurance-v5" ? 3 : 0),
+        continuationsSent,
         // Configuration snapshot deliberately contains no credentials or env values.
         inheritedProviderCount: (cfg.inheritedProviders ?? []).length,
       },

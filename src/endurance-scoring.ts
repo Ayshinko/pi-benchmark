@@ -123,7 +123,14 @@ export function scoreEndurance(
 
   const hiddenRatio = e.total > 0 ? e.passed / e.total : 0;
   const phaseRatio = Math.max(0, Math.min(1, (e.phaseCompletion || 0) / 12));
-  const engineering = Math.round(100 * (0.8 * hiddenRatio + 0.2 * phaseRatio));
+  const rev2 = String(e.evaluatorVersion ?? "").startsWith("ae5-");
+  const groupRatios = Object.values(e.categories ?? {}).map((entry) => entry.total ? entry.passed / entry.total : 0);
+  const equalGroupRatio = groupRatios.length ? groupRatios.reduce((a, b) => a + b, 0) / groupRatios.length : 0;
+  const integrityRatio = categoryRatio(e.categories, ["transactions", "persistence"]);
+  const cliIntegrationRatio = categoryRatio(e.categories, ["cli", "integration", "interface"]);
+  const engineering = rev2
+    ? Math.round(50 * equalGroupRatio + 20 * integrityRatio + 20 * cliIntegrationRatio + 10 * phaseRatio)
+    : Math.round(100 * (0.8 * hiddenRatio + 0.2 * phaseRatio));
 
   const manual = t.manualContinuations;
   const boundary = t.boundaryViolations ?? "UNKNOWN";
@@ -131,16 +138,23 @@ export function scoreEndurance(
 
   let reliability: number | "UNKNOWN" = "UNKNOWN";
   if (manual !== "UNKNOWN") {
-    reliability = Math.max(
-      0,
-      100 -
-        t.prematureStops * 25 -
-        manual * 20 -
-        t.toolFailures * 3 -
-        unrecovered * 4 -
-        (boundary === "UNKNOWN" ? 0 : boundary * 5) -
-        (resumed ? 25 : 0),
-    );
+    if (rev2) {
+      const toolPenalty = Math.min(20, Math.max(0, unrecovered - 5));
+      reliability = Math.max(0, 100 - t.prematureStops * 15 - toolPenalty);
+      if (manual > 0) reliability = Math.min(reliability, 70) - Math.max(0, manual - 1) * 10;
+      if (resumed) reliability = 0;
+    } else {
+      reliability = Math.max(
+        0,
+        100 -
+          t.prematureStops * 25 -
+          manual * 20 -
+          t.toolFailures * 3 -
+          unrecovered * 4 -
+          (boundary === "UNKNOWN" ? 0 : boundary * 5) -
+          (resumed ? 25 : 0),
+      );
+    }
   }
 
   let autonomous: "PASS" | "FAIL" | "UNKNOWN";

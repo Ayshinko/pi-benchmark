@@ -1,0 +1,55 @@
+You are being evaluated in Agent Endurance V5, specification 3.0.0 rev 2. Work autonomously through all 12 phases in the current empty workspace. Do not wait for confirmation. Use Python 3.11 or later and the standard library only. Do not access or modify anything outside the workspace. Write DONE.md only when you believe every phase is complete.
+
+Build a production-quality Mini Warehouse Management System with package `wms/`, runnable as `python -m wms`, and own tests in `tests/`. Tests must use unittest and run with `python -m unittest discover -s tests`. Do not use pytest or third-party packages. Internal Python APIs are free; the public contract is the CLI below.
+
+Complete these phases in order and record objective evidence and commands in PHASES.md:
+1. Architecture and implementation plan, written to PLAN.md
+2. Multi-warehouse inventory management
+3. Customer orders and atomic reservations
+4. Warehouse transfers and partial receiving
+5. Purchase orders and supplier receiving
+6. Returns, refunds and duplicate prevention
+7. JSON persistence, atomic writes and integrity checks
+8. Inventory reporting and sales analytics
+9. Complete argparse CLI
+10. At least 120 meaningful unit tests
+11. Refactoring and full regression testing
+12. At least 10 end-to-end integration scenarios
+
+CLI contract
+
+- Global option `--data PATH` is accepted on every command and defaults to `wms_data.json` in the current directory. The file is created on first write.
+- If `WMS_NOW` is set to an ISO 8601 value, use it as the current time for every timestamp.
+- Caller-supplied IDs are unique; reuse returns `DUPLICATE_ID`.
+- Quantities are positive integers unless a command explicitly permits a negative adjustment. Zero or otherwise invalid quantities return `INVALID_QUANTITY`.
+- Money is a decimal string with exactly two places, such as `"12.50"`. Use Decimal, never float.
+- Order lines use repeatable `--line SKU:QTY` arguments.
+- Success prints exactly one JSON object shaped `{"ok": true, "result": {...}}` to stdout and exits 0.
+- Failure prints exactly one JSON object shaped `{"ok": false, "error": {"code": "<CODE>", "message": "..."}}` to stdout. The data file remains byte-for-byte unchanged.
+- Exit codes: 0 success; 2 argparse usage; 3 business-rule violation; 4 referenced entity not found; 5 data integrity error.
+- Error codes: `DUPLICATE_ID`, `INVALID_QUANTITY`, `INSUFFICIENT_STOCK`, `UNKNOWN_WAREHOUSE`, `UNKNOWN_SKU`, `UNKNOWN_ORDER`, `UNKNOWN_TRANSFER`, `UNKNOWN_PO`, `UNKNOWN_RETURN`, `INVALID_STATE`, `OVER_RECEIVE`, `RETURN_EXCEEDS_SHIPPED`, `DUPLICATE_REFUND`, `INTEGRITY_ERROR`. `UNKNOWN_*` uses exit 4, `INTEGRITY_ERROR` uses exit 5, all others use exit 3.
+
+Commands and required result fields
+
+- `warehouse add --id W --name N`: create a warehouse; result has `id`.
+- `sku add --sku S --name N --price P`: create an SKU; result has `sku`.
+- `stock adjust --warehouse W --sku S --qty Q`: Q may be negative, but resulting on_hand may not be below reserved; result has `on_hand`, `reserved`, `available`.
+- `stock show [--warehouse W] [--sku S]`: result has `stock`, a list sorted by warehouse then SKU, whose rows contain `warehouse`, `sku`, `on_hand`, `reserved`, `available`.
+- `order create --id O --warehouse W --line S:Q ...`: reserve every line or none, capture unit price, status `RESERVED`; result has `id`, `status`.
+- `order cancel --id O`: only from `RESERVED`, release reservations, status `CANCELLED`; result has `id`, `status`.
+- `order ship --id O`: only from `RESERVED`; on_hand and reserved decrease, status `SHIPPED`; result has `id`, `status`.
+- `transfer create --id T --from W1 --to W2 --line S:Q ...`: all or nothing, decrease source on_hand immediately, status `IN_TRANSIT`; result has `id`, `status`.
+- `transfer receive --id T --line S:Q ...`: add to destination; cumulative received cannot exceed sent (`OVER_RECEIVE`); status `PARTIAL` or `RECEIVED`; result has `id`, `status`, and `lines` rows with `sku`, `sent`, `received`.
+- `po create --id P --supplier X --warehouse W --line S:Q ...`: status `OPEN`; result has `id`, `status`.
+- `po receive --id P --line S:Q ...`: add stock; cumulative receive cannot exceed ordered; status `PARTIAL` or `CLOSED`; receiving a closed PO returns `INVALID_STATE`; result has `id`, `status`, and `lines` rows with `sku`, `ordered`, `received`.
+- `return create --id R --order O --line S:Q ...`: only for shipped orders; cumulative returns per SKU cannot exceed shipped; restock the order warehouse; result has `id`, `order`.
+- `refund issue --return R`: amount is returned quantity times captured unit price; a second refund returns `DUPLICATE_REFUND`; result has `return`, `amount`.
+- `report stock`: totals across warehouses sorted by SKU; result has `rows` containing `sku`, `on_hand`, `reserved`, `available`.
+- `report sales [--from DATE] [--to DATE]`: shipped orders in the inclusive ship-time range; result has `orders_shipped`, `units_sold`, `revenue`, `refunds`, `net_revenue`, and `by_sku` rows containing `sku`, `units`, `revenue`.
+- `check`: validate the data file; result has `valid: true`, or return `INTEGRITY_ERROR`.
+
+Data file contract
+
+The top level is `{"schema_version": 1, "checksum": "<hex>", "data": {...}}`; the content of `data` is otherwise free. The checksum is SHA-256 of `json.dumps(data, sort_keys=True, separators=(",", ":"))` encoded as UTF-8. Every write uses a temporary file in the same directory, flushes it, and calls `os.replace`. Every command validates the checksum on load. An unparseable file or checksum mismatch returns `INTEGRITY_ERROR` with exit 5 and must not overwrite the file.
+
+Before finishing, run the full unittest suite and at least 10 separate-process end-to-end scenarios. Deliver PLAN.md, PHASES.md, README.md, wms/, tests/, and DONE.md. Your final response must state completion status and the exact test command and result. The runner and independent evaluator trust artifacts, not your claims.

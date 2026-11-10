@@ -17,7 +17,7 @@ import { stdin, stdout } from "node:process";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { getPrompt, AGENT_ENDURANCE_V3_CONTINUATION_PROMPT, AGENT_ENDURANCE_V3_CONTINUATION_VERSION } from "./prompts.ts";
 import { runBenchmark, configuredWorkspaceRoot } from "./runner.ts";
-import { BENCH_ROOT, latestRuns, findRun, saveRun } from "./store.ts";
+import { BENCH_ROOT, latestRuns, findRun, saveRun, fairComparisonIssues } from "./store.ts";
 import { formatRunDetail, formatTable } from "./format.ts";
 
 const agentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
@@ -73,13 +73,18 @@ async function main(): Promise<void> {
       console.error("usage: compare <runId> <runId>");
       process.exit(1);
     }
+    const issues = fairComparisonIssues(runs);
+    if (issues.length) {
+      console.error(`comparison refused: ${issues.join("; ")}`);
+      process.exit(1);
+    }
     console.log(formatTable(runs));
     console.log(`TPS delta: ${(runs[1].metrics.weightedTps - runs[0].metrics.weightedTps).toFixed(1)} tok/s`);
     return;
   }
 
-  if (sub !== "pagoda" && sub !== "agent-endurance-v3" && sub !== "agent-endurance-v4") {
-    console.log("usage: node src/cli.ts <pagoda|agent-endurance-v3|agent-endurance-v4> --model provider/id [--runs N] [--thinking level] [--timeout s] [--settle ms] [--no-browser] [--fake] [--resume <runId>]");
+  if (!["pagoda", "agent-endurance-v3", "agent-endurance-v4", "agent-endurance-v5"].includes(sub)) {
+    console.log("usage: node src/cli.ts <pagoda|agent-endurance-v3|agent-endurance-v4|agent-endurance-v5> --model provider/id [--runs N] [--thinking level] [--timeout s] [--settle ms] [--no-browser] [--fake] [--resume <runId>]");
     console.log("       node src/cli.ts history [benchmark] [--limit N]");
     console.log("       node src/cli.ts show <runId>");
     console.log("       node src/cli.ts compare <runId> <runId>");
@@ -146,6 +151,8 @@ async function main(): Promise<void> {
       model,
       thinkingLevel: flags.thinking ?? "low",
       timeoutMs: Math.max(30000, Number(flags.timeout ?? Math.round((task.timeoutSeconds ?? 1200))) * 1000),
+      maxTurns: task.maxTurns,
+      continuationLimit: task.benchmark === "agent-endurance-v5" && flags["no-continuations"] !== "true" ? 3 : 0,
       settleMs: Math.max(500, Number(flags.settle ?? 3000)),
       viewport: { width: 1280, height: 720 },
       runIndex: i,

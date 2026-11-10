@@ -19,8 +19,10 @@ import type { EnduranceEvaluation } from "./endurance-scoring.ts";
 
 export const EVALUATOR_SCRIPT = path.join(import.meta.dirname, "evaluators", "agent-endurance-v3.py");
 export const EVALUATOR_V4_SCRIPT = path.join(import.meta.dirname, "evaluators", "agent-endurance-v4.py");
+export const EVALUATOR_V5_SCRIPT = path.join(import.meta.dirname, "evaluators", "agent-endurance-v5.py");
 
 export function evaluatorScript(benchmarkVersion = "agent-endurance-v3"): string {
+  if (benchmarkVersion === "agent-endurance-3.0.0-rev2") return EVALUATOR_V5_SCRIPT;
   return benchmarkVersion === "agent-endurance-v4" ? EVALUATOR_V4_SCRIPT : EVALUATOR_SCRIPT;
 }
 

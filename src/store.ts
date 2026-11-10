@@ -109,6 +109,9 @@ function benchmarkMatches(run: RunResult, reference: string): boolean {
   if (wanted === "agent-endurance-v4" || wanted === "endurance-v4") {
     return runBenchmark === "agent-endurance-v4" || version === "agent-endurance-v4";
   }
+  if (["agent-endurance-v5", "endurance-v5", "agent-endurance-3.0.0-rev2"].includes(wanted)) {
+    return runBenchmark === "agent-endurance-v5" || version === "agent-endurance-3.0.0-rev2";
+  }
   return false;
 }
 
@@ -118,4 +121,25 @@ export function findRun(id: string): RunResult | null {
 
 export function latestRuns(benchmark: string, limit: number): RunResult[] {
   return loadRuns(benchmark).slice(-limit).reverse();
+}
+
+/** Locked-variable audit for fair model comparisons. Model identity may differ. */
+export function fairComparisonIssues(runs: RunResult[]): string[] {
+  if (runs.length < 2) return ["at least two runs are required"];
+  const fields: Array<[string, (run: RunResult) => unknown]> = [
+    ["benchmark version", (r) => r.benchmarkVersion],
+    ["prompt hash", (r) => r.promptHash],
+    ["thinking level", (r) => r.thinkingLevel],
+    ["context length", (r) => r.endurance?.configuration?.contextWindow ?? "UNKNOWN"],
+    ["max output", (r) => r.endurance?.configuration?.maxTokens ?? "UNKNOWN"],
+    ["wall budget", (r) => r.endurance?.configuration?.timeoutMs ?? "UNKNOWN"],
+    ["turn budget", (r) => r.endurance?.configuration?.maxTurns ?? "UNKNOWN"],
+    ["continuation policy", (r) => r.endurance?.configuration?.continuationLimit ?? "UNKNOWN"],
+  ];
+  const issues: string[] = [];
+  for (const [label, read] of fields) {
+    const values = runs.map((run) => JSON.stringify(read(run)));
+    if (new Set(values).size > 1) issues.push(`${label} differs: ${values.join(" vs ")}`);
+  }
+  return issues;
 }

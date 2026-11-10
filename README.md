@@ -16,6 +16,12 @@ the same workload and scoring weights, but explicitly requires `inventory()` to 
 stock as an integer and every `lines`/`quantities` payload to be a `{sku: qty}` mapping. V3 remains
 available unchanged for historical comparisons; V3 and V4 results must not be mixed.
 
+**Agent Endurance V5** (`agent-endurance-v5`, internal version `agent-endurance-3.0.0-rev2`)
+implements the rev 2 CLI-only `wms/` contract. It freezes the prompt with a registered SHA-256,
+uses a four-hour and 400-turn budget, defaults to at most three fixed-text continuations, writes
+workspaces under `C:\AI\Scratch\pi-agent-benchmarks`, records integrity hashes, and evaluates a
+copied package with fixed `PYTHONHASHSEED` and `WMS_NOW`. It is not comparable with V3 or V4.
+
 ## Agent Endurance V3
 
 **Purpose.** Evaluate long-running coding-agent reliability, software-engineering
@@ -34,6 +40,7 @@ settings are preserved unless advanced flags explicitly override them.
                                  [--timeout seconds] [--resume <runId>]
 node src/cli.ts agent-endurance-v3 --model provider/id [--runs N]   # headless CLI
 node src/cli.ts agent-endurance-v4 --model provider/id [--runs N]   # clarified contract
+node src/cli.ts agent-endurance-v5 --model provider/id --runs 3     # rev 2 fair-comparison suite
 ```
 
 Default wall-clock budget for this suite is **3 hours** (`timeoutSeconds: 10800` in the suite

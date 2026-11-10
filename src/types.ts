@@ -23,6 +23,7 @@ export type ResultState =
   | "FAIL_VISUAL"
   | "FAIL_MISSING_ARTIFACT"
   | "FAIL_TIMEOUT"
+  | "BUDGET_EXCEEDED"
   | "FAIL_COMPLIANCE"
   | "REVIEW"
   | "ERROR_HARNESS";
@@ -217,6 +218,7 @@ export interface RunResult {
   timings: { agentMs: number; validationMs: number };
   /** Present only for Agent Endurance V3; absent keeps historical records compatible. */
   endurance?: {
+    status?: "AUTONOMOUS_PASS" | "PASS_WITH_CONTINUATION" | "PARTIAL" | "FAILED" | "BUDGET_EXCEEDED" | "CRASHED" | "INTEGRITY_VIOLATION" | "RESUMED";
     evaluation: import("./endurance-scoring.ts").EnduranceEvaluation & {
       phases?: Array<{ phase: number; label: string; evidence: string | null; status: "declared" | "missing" }>;
       evaluatorScript?: string;
@@ -232,6 +234,7 @@ export interface RunResult {
     resumeOf?: string;
     /** Transcript the measurements came from. */
     sessionFile?: string | null;
+    integrity?: { ok: boolean; changedPaths: string[] };
     configuration: Record<string, unknown>;
   };
 }

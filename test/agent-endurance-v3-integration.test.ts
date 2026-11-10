@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_ENDURANCE_V3,
   AGENT_ENDURANCE_V4,
+  AGENT_ENDURANCE_V5,
+  AGENT_ENDURANCE_V5_REGISTERED_SHA256,
   AGENT_ENDURANCE_V3_CONTINUATION_PROMPT,
   AGENT_ENDURANCE_V3_CONTINUATION_VERSION,
   PAGODA_V1,
@@ -35,6 +37,8 @@ import {
 import { evaluateEndurance, evaluatorIdentity, phaseEvidence } from "../src/endurance-evaluator.ts";
 import { scoreEndurance } from "../src/endurance-scoring.ts";
 import { enduranceSection, gates } from "../src/reporting.ts";
+import { captureIntegrity, compareIntegrity } from "../src/integrity.ts";
+import { fairComparisonIssues } from "../src/store.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures");
@@ -55,10 +59,13 @@ check("aliases resolve to agent-endurance-v3", [
 ].every((ref) => resolveBenchmark(ref).version === "agent-endurance-v3"));
 check("v4 aliases resolve independently", ["agent-endurance-v4", "endurance-v4", "agent endurance v4"]
   .every((ref) => resolveBenchmark(ref).version === "agent-endurance-v4"));
-check("all production suites are discoverable", productionBenchmarks().length === 3
+check("rev2 aliases resolve to the separately versioned v5 suite", ["agent-endurance-v5", "endurance-v5", "agent-endurance-3.0.0-rev2"]
+  .every((ref) => resolveBenchmark(ref).version === "agent-endurance-3.0.0-rev2"));
+check("all production suites are discoverable", productionBenchmarks().length === 4
   && productionBenchmarks().some((s) => s.version === "pagoda-v1")
   && productionBenchmarks().some((s) => s.version === "agent-endurance-v3")
-  && productionBenchmarks().some((s) => s.version === "agent-endurance-v4"));
+  && productionBenchmarks().some((s) => s.version === "agent-endurance-v4")
+  && productionBenchmarks().some((s) => s.version === "agent-endurance-3.0.0-rev2"));
 check("pagoda default timeout is 1200s", PAGODA_V1.timeoutSeconds === 1200);
 check("endurance timeout is a long build budget", AGENT_ENDURANCE_V3.timeoutSeconds >= 7200);
 
@@ -85,6 +92,9 @@ check("prompt tells the agent to stay inside the workspace", /Do not access or m
 check("v4 fixes inventory return shape", /inventory\(warehouse_id, sku\).*Python `int`/.test(AGENT_ENDURANCE_V4.prompt));
 check("v4 fixes line payload shape", /mapping of SKU strings to positive integer quantities/.test(AGENT_ENDURANCE_V4.prompt));
 check("v3 prompt remains byte-distinct", hashPrompt(AGENT_ENDURANCE_V3.prompt) !== hashPrompt(AGENT_ENDURANCE_V4.prompt));
+check("rev2 prompt hash is frozen", hashPrompt(AGENT_ENDURANCE_V5.prompt) === AGENT_ENDURANCE_V5_REGISTERED_SHA256);
+check("rev2 budget is four hours and 400 turns", AGENT_ENDURANCE_V5.timeoutSeconds === 14400 && AGENT_ENDURANCE_V5.maxTurns === 400);
+check("rev2 uses the CLI-only wms contract", /package `wms\/`/.test(AGENT_ENDURANCE_V5.prompt) && AGENT_ENDURANCE_V5.expectedArtifact === "wms/__init__.py");
 check("continuation prompt is separately versioned", AGENT_ENDURANCE_V3_CONTINUATION_VERSION.includes("continuation")
   && AGENT_ENDURANCE_V3_CONTINUATION_PROMPT !== AGENT_ENDURANCE_V3.prompt);
 
@@ -103,6 +113,20 @@ const withRoot = buildRunPaths({ ...baseCfg, workspaceRoot: path.join(os.tmpdir(
 check("workspaceRoot override moves the workspace outside the results tree",
   !withRoot.workspace.startsWith(path.resolve("R")) && withRoot.workspace.includes("bench-workspaces"));
 check("default workspace lives inside the run dir", first.workspace === path.join(first.runDir, "workspace"));
+const rev2Paths = buildRunPaths({ ...baseCfg, benchmark: "agent-endurance-v5" }, "2026-07-29T00-00-00-000Z");
+if (process.platform === "win32") check("rev2 defaults to the specified Scratch root", rev2Paths.workspace.startsWith("C:\\AI\\Scratch\\pi-agent-benchmarks"));
+
+const integrityRoot = fs.mkdtempSync(path.join(os.tmpdir(), "endurance-integrity-"));
+fs.mkdirSync(path.join(integrityRoot, "src", "evaluators"), { recursive: true });
+fs.writeFileSync(path.join(integrityRoot, "src", "evaluators", "hidden.py"), "one");
+const integrityAgent = fs.mkdtempSync(path.join(os.tmpdir(), "endurance-agent-"));
+const beforeIntegrity = captureIntegrity(integrityAgent, integrityRoot);
+fs.writeFileSync(path.join(integrityRoot, "src", "evaluators", "hidden.py"), "two");
+check("integrity hashing detects hidden evaluator changes", compareIntegrity(beforeIntegrity, captureIntegrity(integrityAgent, integrityRoot)).length === 1);
+
+const comparable: any = { benchmarkVersion: "agent-endurance-3.0.0-rev2", promptHash: "same", thinkingLevel: "low", endurance: { configuration: { contextWindow: 1, maxTokens: 2, timeoutMs: 3, maxTurns: 400, continuationLimit: 3 } } };
+check("fair comparison accepts identical locks", fairComparisonIssues([comparable, { ...comparable }]).length === 0);
+check("fair comparison rejects changed budgets", fairComparisonIssues([comparable, { ...comparable, endurance: { configuration: { ...comparable.endurance.configuration, maxTurns: 399 } } }]).some((issue) => issue.includes("turn budget")));
 
 // -------------------------------------------------------------------------- //
 console.log("[session events: real pi event names]");
@@ -231,6 +255,15 @@ const partialEngineering = scoreEndurance({ ...evaluation, passed: 5, total: 20,
 check("partial credit scored by hidden tests + phases", partialEngineering.engineering === 30, String(partialEngineering.engineering));
 check("partial credit is not autonomous PASS", partialEngineering.autonomous === "FAIL");
 
+const rev2Evaluation: any = { passed: 4, total: 4, evaluatorVersion: "ae5-hidden-1", completed: true,
+  phaseCompletion: 12, details: [], categories: { inventory: { passed: 1, total: 1 },
+    persistence: { passed: 1, total: 1 }, transactions: { passed: 1, total: 1 },
+    interface: { passed: 1, total: 1 } } };
+const rev2Perfect = scoreEndurance(rev2Evaluation, cleanTelemetry as any, { wallMs: 1 }, false);
+check("rev2 engineering formula reaches 100 for all groups and phases", rev2Perfect.engineering === 100, String(rev2Perfect.engineering));
+const rev2Continued = scoreEndurance(rev2Evaluation, { ...cleanTelemetry, manualContinuations: 1 } as any, { wallMs: 1 }, false);
+check("rev2 first continuation caps reliability at 70", rev2Continued.reliability === 70, String(rev2Continued.reliability));
+
 // -------------------------------------------------------------------------- //
 console.log("[independent evaluator: coverage, determinism and isolation]");
 const identity = evaluatorIdentity();
@@ -252,6 +285,16 @@ check("v4 rejects the v3 fixture's now-disallowed inventory mapping", !goodV4.co
   && goodV4.categories["v4-contract"]?.passed === 1
   && goodV4.details.some((detail) => detail.includes("inventory() must return")),
   JSON.stringify({ passed: goodV4.passed, total: goodV4.total, details: goodV4.details }));
+
+const identityV5 = evaluatorIdentity("agent-endurance-3.0.0-rev2");
+const goodV5 = evaluateEndurance(path.join(FIXTURES, "wms-ref"), { benchmarkVersion: "agent-endurance-3.0.0-rev2" });
+check("rev2 has an independent evaluator identity", identityV5.version === "ae5-hidden-1"
+  && identityV5.sha256 !== identityV4.sha256);
+check("rev2 reference implementation passes every hidden group", goodV5.completed && goodV5.passed === goodV5.total,
+  JSON.stringify({ passed: goodV5.passed, total: goodV5.total, details: goodV5.details }));
+const goodV5Again = evaluateEndurance(path.join(FIXTURES, "wms-ref"), { benchmarkVersion: "agent-endurance-3.0.0-rev2" });
+check("rev2 evaluator is deterministic", goodV5Again.passed === goodV5.passed
+  && goodV5Again.total === goodV5.total && JSON.stringify(goodV5Again.categories) === JSON.stringify(goodV5.categories));
 
 const broken = evaluateEndurance(path.join(FIXTURES, "warehouse-broken"));
 check("broken implementation fails hidden checks", !broken.completed && broken.passed < broken.total,

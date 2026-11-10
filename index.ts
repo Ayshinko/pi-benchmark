@@ -31,7 +31,7 @@ import { runBenchmark, configuredWorkspaceRoot } from "./src/runner.ts";
 import { liveLine, formatTable, formatRunDetail, formatTps } from "./src/format.ts";
 import { formatResultCard, formatAggregateCard } from "./src/reporting.ts";
 import { ThrottledStatus } from "./src/status.ts";
-import { BENCH_ROOT, loadRuns, latestRuns, findRun, saveRun } from "./src/store.ts";
+import { BENCH_ROOT, loadRuns, latestRuns, findRun, saveRun, fairComparisonIssues } from "./src/store.ts";
 import {
   parseBenchmarkInvocation,
   pickRunCountInteractive,
@@ -236,6 +236,8 @@ export async function executeBenchmark(
       model: plan.model,
       thinkingLevel: plan.thinking,
       timeoutMs: plan.timeoutSeconds * 1000,
+      maxTurns: task.maxTurns,
+      continuationLimit: task.benchmark === "agent-endurance-v5" ? 3 : 0,
       settleMs: plan.settleMs,
       viewport: { width: 1280, height: 720 },
       runIndex: index,
@@ -308,7 +310,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("benchmark", {
     description: "Run Pagoda v1 or Agent Endurance V3 with the current model.",
     getArgumentCompletions: (prefix) => {
-      const opts = ["agent-endurance-v4", "agent-endurance-v3", "pagoda-v1", "--advanced", "1", "3", "5"];
+      const opts = ["agent-endurance-v5", "agent-endurance-v4", "agent-endurance-v3", "pagoda-v1", "--advanced", "1", "3", "5"];
       const matches = opts.filter((o) => o.startsWith(prefix));
       return matches.length ? matches.map((o) => ({ value: o, label: o })) : null;
     },
@@ -433,7 +435,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("artifact-bench", {
     description: "Advanced/legacy benchmark interface. Run pagoda-v1, list history, compare, or show runs.",
     getArgumentCompletions: (prefix) => {
-      const commands = ["pagoda", "agent-endurance-v4", "agent-endurance-v3", "history", "compare", "show", "help"];
+      const commands = ["pagoda", "agent-endurance-v5", "agent-endurance-v4", "agent-endurance-v3", "history", "compare", "show", "help"];
       const matches = commands.filter((command) => command.startsWith(prefix));
       return matches.length ? matches.map((command) => ({ value: command, label: command })) : null;
     },
@@ -446,7 +448,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(
           [
             "Use /benchmark for the simple first-time flow (Pagoda v1, current model).",
-            "/artifact-bench <pagoda|agent-endurance-v3|agent-endurance-v4> [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser] [--resume <runId>]",
+            "/artifact-bench <pagoda|agent-endurance-v3|agent-endurance-v4|agent-endurance-v5> [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser] [--resume <runId>]",
             "/artifact-bench history [--limit N]",
             "/artifact-bench compare <runId> <runId>",
             "/artifact-bench show <runId>",
@@ -490,6 +492,11 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("Need two runs to compare. Provide two run ids, or run the benchmark twice first.", "error");
           return;
         }
+        const issues = fairComparisonIssues(runs);
+        if (issues.length) {
+          ctx.ui.notify(`Comparison refused: ${issues.join("; ")}`, "error");
+          return;
+        }
         const table = formatTable(runs);
         const delta = runs[1].metrics.weightedTps - runs[0].metrics.weightedTps;
         pi.sendMessage({
@@ -500,7 +507,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (subcommand === "pagoda" || subcommand === "agent-endurance-v3" || subcommand === "agent-endurance-v4") {
+      if (["pagoda", "agent-endurance-v3", "agent-endurance-v4", "agent-endurance-v5"].includes(subcommand)) {
         const options = readRunOptions(flags);
         const task = getPrompt(subcommand);
         const timeoutSeconds = options.timeoutSeconds > 0 ? options.timeoutSeconds : task.timeoutSeconds;

@@ -176,6 +176,7 @@ export function enduranceSection(run: RunResult): string[] {
   const lines: string[] = [
     "Engineering and reliability",
     row2("Overall", run.outcome === "PASS" ? "PASS" : run.outcome),
+    row2("Run status", e.status ?? "legacy"),
     ...(e.resumed ? [row2("Resumed run", `DIAGNOSTIC (continues ${e.resumeOf ?? "unknown run"})`)] : []),
     row2("Engineering score", `${e.scores.engineering}/100`),
     row2("  hidden tests", `${(breakdown.hiddenTests * 100).toFixed(0)}%`),
@@ -198,6 +199,7 @@ export function enduranceSection(run: RunResult): string[] {
     row2("Compactions", String(t.compactions)),
     row2("Stop reasons", t.stopReasons || "n/a"),
     row2("Workspace boundary hits", String(t.boundaryViolations)),
+    row2("Integrity", e.integrity ? (e.integrity.ok ? "PASS" : `VIOLATION: ${e.integrity.changedPaths.join(", ")}`) : "UNKNOWN"),
     row2("Observed from", `${t.observation?.events ? "live events" : ""}${t.observation?.events && t.observation?.session ? " + " : ""}${t.observation?.session ? "session transcript" : ""}${!t.observation?.events && !t.observation?.session ? "no source available" : ""}`),
     "",
     "Efficiency (raw, not scored)",

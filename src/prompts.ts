@@ -27,6 +27,10 @@ const AGENT_ENDURANCE_V3_TEXT = fs.readFileSync(
 const AGENT_ENDURANCE_V4_TEXT = fs.readFileSync(
   path.join(import.meta.dirname, "assets", "agent-endurance-v4.prompt.txt"), "utf8",
 );
+const AGENT_ENDURANCE_V5_TEXT = fs.readFileSync(
+  path.join(import.meta.dirname, "assets", "agent-endurance-v5.prompt.txt"), "utf8",
+);
+export const AGENT_ENDURANCE_V5_REGISTERED_SHA256 = "d0327cff7fe4f7d54590fa8691818da6eb1f85962132af1b86c4ad01022c02a9";
 
 /**
  * SHA-256 over the exact bytes (UTF-8) of the given prompt text. This is the
@@ -48,6 +52,10 @@ export interface BenchmarkPrompt {
   expectedArtifact: string;
   /** Default wall-clock budget for one run, in seconds (per-suite, not per-model). */
   timeoutSeconds: number;
+  /** Hard assistant-turn budget when the runner can enforce it. */
+  maxTurns?: number;
+  /** Frozen hash; a mismatch prevents suite resolution. */
+  registeredPromptHash?: string;
 }
 
 export const PAGODA_V1_PROMPT_TEXT = PAGODA_V1_TEXT;
@@ -71,6 +79,13 @@ export const AGENT_ENDURANCE_V4: BenchmarkPrompt = {
   prompt: AGENT_ENDURANCE_V4_TEXT, expectedArtifact: "warehouse/__init__.py",
   timeoutSeconds: 10800,
 };
+export const AGENT_ENDURANCE_V5: BenchmarkPrompt = {
+  benchmark: "agent-endurance-v5", version: "agent-endurance-3.0.0-rev2", name: "Agent Endurance V5",
+  prompt: AGENT_ENDURANCE_V5_TEXT, expectedArtifact: "wms/__init__.py",
+  timeoutSeconds: 14400,
+  maxTurns: 400,
+  registeredPromptHash: AGENT_ENDURANCE_V5_REGISTERED_SHA256,
+};
 
 /**
  * Diagnostic continuation prompt for Agent Endurance V3 resume runs only.
@@ -90,11 +105,12 @@ export const PROMPTS: Record<string, BenchmarkPrompt> = {
   pagoda: PAGODA_V1,
   "agent-endurance-v3": AGENT_ENDURANCE_V3,
   "agent-endurance-v4": AGENT_ENDURANCE_V4,
+  "agent-endurance-v5": AGENT_ENDURANCE_V5,
 };
 
 /** The production benchmark suites currently shipped (pagoda-v1 and agent-endurance-v3). */
 export function productionBenchmarks(): BenchmarkPrompt[] {
-  return [PAGODA_V1, AGENT_ENDURANCE_V3, AGENT_ENDURANCE_V4];
+  return [PAGODA_V1, AGENT_ENDURANCE_V3, AGENT_ENDURANCE_V4, AGENT_ENDURANCE_V5];
 }
 
 /**
@@ -109,13 +125,22 @@ export function resolveBenchmark(ref: string): BenchmarkPrompt {
   }
   if (["agent-endurance-v3", "endurance", "endurance-v3", "agent endurance v3"].includes(key)) return AGENT_ENDURANCE_V3;
   if (["agent-endurance-v4", "endurance-v4", "agent endurance v4"].includes(key)) return AGENT_ENDURANCE_V4;
-  throw new Error(`Unknown benchmark "${ref}". Available: pagoda-v1, agent-endurance-v3, agent-endurance-v4`);
+  if (["agent-endurance-v5", "endurance-v5", "agent endurance v5", "agent-endurance-3.0.0-rev2"].includes(key)) {
+    if (hashPrompt(AGENT_ENDURANCE_V5.prompt) !== AGENT_ENDURANCE_V5_REGISTERED_SHA256) {
+      throw new Error("Agent Endurance V5 prompt hash mismatch; refusing to start a mutated benchmark");
+    }
+    return AGENT_ENDURANCE_V5;
+  }
+  throw new Error(`Unknown benchmark "${ref}". Available: pagoda-v1, agent-endurance-v3, agent-endurance-v4, agent-endurance-v5`);
 }
 
 export function getPrompt(benchmark: string): BenchmarkPrompt {
   const entry = PROMPTS[benchmark];
   if (!entry) {
     throw new Error(`Unknown benchmark "${benchmark}". Available: ${Object.keys(PROMPTS).join(", ")}`);
+  }
+  if (entry.registeredPromptHash && hashPrompt(entry.prompt) !== entry.registeredPromptHash) {
+    throw new Error(`${entry.name} prompt hash mismatch; refusing to start a mutated benchmark`);
   }
   return entry;
 }
