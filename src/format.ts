@@ -66,28 +66,8 @@ export function summaryLine(run: RunResult): string {
 }
 
 export function formatTable(runs: RunResult[]): string {
-  const endurance = runs.some((run) => run.endurance);
-  const headers = endurance
-    ? ["outcome", "model", "think", "eng", "reliability", "auton", "hidden", "phases", "wall", "out tok", "tools", "resumed"]
-    : ["outcome", "model", "think", "TPS", "wall", "gen", "out tok", "tools", "artifact", "visual"];
+  const headers = ["outcome", "model", "think", "TPS", "wall", "gen", "out tok", "tools", "artifact", "visual"];
   const rows = runs.map((run) => {
-    if (endurance) {
-      const e = run.endurance;
-      return [
-        run.outcome,
-        `${run.model.provider}/${run.model.id}`,
-        run.thinkingLevel,
-        e ? `${e.scores.engineering}/100` : "n/a",
-        e ? String(e.scores.reliability) : "n/a",
-        e ? e.scores.autonomous : "n/a",
-        e ? `${e.evaluation.passed}/${e.evaluation.total}` : "n/a",
-        e ? `${e.evaluation.phaseCompletion}/12` : "n/a",
-        formatDuration(run.metrics.wallMs),
-        formatNumber(run.metrics.outputTokens),
-        String(run.metrics.toolCalls),
-        e?.resumed ? "yes" : "no",
-      ];
-    }
     return [
       run.outcome,
       `${run.model.provider}/${run.model.id}`,
@@ -151,22 +131,6 @@ export function formatRunDetail(run: RunResult): string {
     `  compliance     ${run.compliance ? formatComplianceOverall(run.compliance) : "n/a (legacy result)"}`,
     `  run dir        ${run.runDir}`,
   ];
-  if (run.endurance) {
-    const e = run.endurance;
-    lines.push(
-      `  endurance      engineering ${e.scores.engineering}/100, reliability ${e.scores.reliability}, autonomous ${e.scores.autonomous}`,
-      `  run status     ${e.status ?? "legacy"}`,
-      `  hidden tests   ${e.evaluation.passed}/${e.evaluation.total} (evaluator ${e.evaluation.evaluatorVersion ?? "unknown"})`,
-      `  phases         ${e.evaluation.phaseCompletion}/12`,
-      `  reliability    premature stops ${e.telemetry.prematureStops}, continuations ${e.telemetry.manualContinuations}, tool failures ${e.telemetry.toolFailures}, recovered ${e.telemetry.recoveries}, invalid args ${e.telemetry.invalidToolArguments}, malformed ${e.telemetry.malformedToolCalls}, retries ${e.telemetry.retries}, compactions ${e.telemetry.compactions}`,
-      `  completion     failed completion claim ${e.telemetry.failedCompletionClaim ?? false}`,
-      `  efficiency     wall ${formatDuration(e.scores.efficiency.wallMs)}, cumulative output ${formatNumber(e.scores.efficiency.outputTokens as number)}, cumulative input ${formatNumber(e.scores.efficiency.inputTokens as number)}, active context peak ${e.telemetry.activeContextPeak}, tool calls ${e.telemetry.toolCalls} (cumulative tokens are NOT active context)`,
-      `  boundary       workspace violations ${e.telemetry.boundaryViolations}`,
-      `  integrity      ${e.integrity ? (e.integrity.ok ? "PASS" : `VIOLATION: ${e.integrity.changedPaths.join(", ")}`) : "UNKNOWN"}`,
-      `  resumed        ${e.resumed ? `DIAGNOSTIC continuation of ${e.resumeOf ?? "unknown"}` : "no (single uninterrupted session)"}`,
-      `  evaluator out  ${e.evaluatorOutputPath ?? "not persisted (legacy)"}`,
-    );
-  }
   if (run.browser.consoleErrors.length > 0) {
     lines.push(`  console errors ${run.browser.consoleErrors.slice(0, 5).join(" | ")}`);
   }

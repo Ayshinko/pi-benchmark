@@ -26,7 +26,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { productionBenchmarks, resolveBenchmark, getPrompt, AGENT_ENDURANCE_V3_CONTINUATION_PROMPT, AGENT_ENDURANCE_V3_CONTINUATION_VERSION } from "./src/prompts.ts";
+import { productionBenchmarks, resolveBenchmark, getPrompt } from "./src/prompts.ts";
 import { runBenchmark, configuredWorkspaceRoot } from "./src/runner.ts";
 import { liveLine, formatTable, formatRunDetail, formatTps } from "./src/format.ts";
 import { formatResultCard, formatAggregateCard } from "./src/reporting.ts";
@@ -49,8 +49,6 @@ interface RunOptions {
   browser: boolean;
   settleMs: number;
   fake: boolean;
-  /** Run id to continue diagnostically (Agent Endurance V3 only). */
-  resume: string | null;
 }
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string> } {
@@ -88,7 +86,6 @@ function readRunOptions(flags: Record<string, string>): RunOptions {
     browser: flags["no-browser"] !== "true",
     settleMs: Math.max(500, parseInt(flags.settle ?? "3000", 10) || 3000),
     fake: flags.fake === "true",
-    resume: flags.resume && flags.resume !== "true" ? flags.resume : null,
   };
 }
 
@@ -146,8 +143,6 @@ export interface ExecPlan {
   browser: boolean;
   settleMs: number;
   fake: boolean;
-  /** Diagnostic continuation of an earlier run (Agent Endurance V3). */
-  resumeFrom?: { runId: string; workspace: string; sessionFile: string | null };
 }
 
 /**
@@ -213,12 +208,8 @@ export async function executeBenchmark(
   const run = deps.run ?? runBenchmark;
   const save = deps.save ?? saveRun;
   const task = getPrompt(plan.benchmarkKey);
-  const resumed = Boolean(plan.resumeFrom);
-  if (resumed && task.benchmark !== "agent-endurance-v3") {
-    throw new Error("--resume is only supported for agent-endurance-v3 runs");
-  }
-  const prompt = resumed ? AGENT_ENDURANCE_V3_CONTINUATION_PROMPT : task.prompt;
-  const promptVersion = resumed ? AGENT_ENDURANCE_V3_CONTINUATION_VERSION : task.version;
+  const prompt = task.prompt;
+  const promptVersion = task.version;
   const results: any[] = [];
   let sequence = 0;
   const emit = (entry: Omit<BenchmarkTranscriptEntry, "sequence">) =>
@@ -242,8 +233,6 @@ export async function executeBenchmark(
       model: plan.model,
       thinkingLevel: plan.thinking,
       timeoutMs: plan.timeoutSeconds * 1000,
-      maxTurns: task.maxTurns,
-      continuationLimit: task.benchmark === "agent-endurance-v5" ? 3 : 0,
       settleMs: plan.settleMs,
       viewport: { width: 1280, height: 720 },
       runIndex: index,
@@ -253,7 +242,6 @@ export async function executeBenchmark(
       inheritedProviders: collectInheritedProviders(ctx, plan.model),
       fake: plan.fake,
       fakeArtifactPath: plan.fake ? FAKE_ARTIFACT : undefined,
-      resumeFrom: plan.resumeFrom,
       workspaceRoot: configuredWorkspaceRoot(),
       signal: ctx.signal,
       onProgress: (line) => {
@@ -329,9 +317,9 @@ export default function (pi: ExtensionAPI) {
   // Primary entry point: /benchmark
   // ------------------------------------------------------------------ //
   pi.registerCommand("benchmark", {
-    description: "Run Pagoda v1 or Agent Endurance V3 with the current model.",
+    description: "Run Pagoda v1 with the current model and thinking level.",
     getArgumentCompletions: (prefix) => {
-      const opts = ["agent-endurance-v5", "agent-endurance-v4", "agent-endurance-v3", "pagoda-v1", "--advanced", "1", "3", "5"];
+      const opts = ["pagoda-v1", "--advanced", "1", "3", "5"];
       const matches = opts.filter((o) => o.startsWith(prefix));
       return matches.length ? matches.map((o) => ({ value: o, label: o })) : null;
     },
@@ -347,15 +335,10 @@ export default function (pi: ExtensionAPI) {
       }
 
       const suites = productionBenchmarks();
-      let task = suiteToken ? resolveBenchmark(suiteToken) : suites[0];
+      const task = suiteToken ? resolveBenchmark(suiteToken) : suites[0];
       const model = ctx.model;
       const thinking = currentThinking(ctx);
       const ui = toWizardUI(ctx);
-      if (!suiteToken && invocation.mode === "interactive" && suites.length > 1) {
-        const selected = await ui.select("Benchmark suite", suites.map((s) => `${s.name} (${s.version})`));
-        if (!selected) return;
-        task = suites.find((s) => selected.startsWith(s.name)) ?? suites[0];
-      }
 
       // STEP 2: show current selection (never change it silently).
       ctx.ui.notify(
@@ -456,7 +439,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("artifact-bench", {
     description: "Advanced/legacy benchmark interface. Run pagoda-v1, list history, compare, or show runs.",
     getArgumentCompletions: (prefix) => {
-      const commands = ["pagoda", "agent-endurance-v5", "agent-endurance-v4", "agent-endurance-v3", "history", "compare", "show", "help"];
+      const commands = ["pagoda", "history", "compare", "show", "help"];
       const matches = commands.filter((command) => command.startsWith(prefix));
       return matches.length ? matches.map((command) => ({ value: command, label: command })) : null;
     },
@@ -469,7 +452,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify(
           [
             "Use /benchmark for the simple first-time flow (Pagoda v1, current model).",
-            "/artifact-bench <pagoda|agent-endurance-v3|agent-endurance-v4|agent-endurance-v5> [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser] [--resume <runId>]",
+            "/artifact-bench pagoda [--runs N] [--model provider/id] [--thinking level] [--timeout seconds] [--no-browser]",
             "/artifact-bench history [--limit N]",
             "/artifact-bench compare <runId> <runId>",
             "/artifact-bench show <runId>",
@@ -528,32 +511,10 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (["pagoda", "agent-endurance-v3", "agent-endurance-v4", "agent-endurance-v5"].includes(subcommand)) {
+      if (subcommand === "pagoda") {
         const options = readRunOptions(flags);
         const task = getPrompt(subcommand);
         const timeoutSeconds = options.timeoutSeconds > 0 ? options.timeoutSeconds : task.timeoutSeconds;
-
-        let resumeFrom: ExecPlan["resumeFrom"];
-        if (options.resume) {
-          const source = findRun(options.resume);
-          if (!source) {
-            ctx.ui.notify(`No run with id "${options.resume}". Use /artifact-bench history to list runs.`, "error");
-            return;
-          }
-          if (source.benchmark !== "agent-endurance-v3") {
-            ctx.ui.notify("--resume is only supported for agent-endurance-v3 runs.", "error");
-            return;
-          }
-          if (!source.sessionFile) {
-            ctx.ui.notify("That run has no session transcript to continue from.", "error");
-            return;
-          }
-          resumeFrom = {
-            runId: source.id,
-            workspace: source.workspace,
-            sessionFile: source.sessionFile,
-          };
-        }
 
         let model: any;
         try {
@@ -566,9 +527,7 @@ export default function (pi: ExtensionAPI) {
         const thinking = options.thinking ?? currentThinking(ctx);
         const confirmed = await ctx.ui.confirm(
           "Strata benchmark exclusivity",
-          resumeFrom
-            ? `Resuming run ${resumeFrom.runId} as a DIAGNOSTIC run. A resumed run can never score as an autonomous PASS. The source run is copied, never modified.\n\nFor accurate Strata-native TPS, do not run other Pi sessions or other Strata inference clients during this benchmark. Continue?`
-            : "For accurate Strata-native TPS, do not run other Pi sessions or other Strata inference clients during this benchmark. This benchmark does not technically lock the server. Continue?",
+          "For accurate Strata-native TPS, do not run other Pi sessions or other Strata inference clients during this benchmark. This benchmark does not technically lock the server. Continue?",
         );
         if (!confirmed) {
           ctx.ui.notify("Benchmark cancelled.", "info");
@@ -583,7 +542,6 @@ export default function (pi: ExtensionAPI) {
           browser: options.browser,
           settleMs: options.settleMs,
           fake: options.fake,
-          ...(resumeFrom ? { resumeFrom } : {}),
         });
         return;
       }

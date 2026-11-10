@@ -11,8 +11,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -29,11 +27,6 @@ import { findArtifact } from "./artifact.ts";
 import { validateArtifact } from "./browser.ts";
 import { determineOutcome } from "./outcome.ts";
 import type { ArtifactReport, BrowserReport, ComplianceReport, RunResult } from "./types.ts";
-import { parseEnduranceEvents, mergeEnduranceTelemetry } from "./endurance-events.ts";
-import { analyzeEnduranceSession } from "./endurance-session.ts";
-import { evaluateEndurance } from "./endurance-evaluator.ts";
-import { scoreEndurance } from "./endurance-scoring.ts";
-import { captureIntegrity, compareIntegrity } from "./integrity.ts";
 import { compactJson, summarizeToolResult, type BenchmarkForwardEvent } from "./transcript.ts";
 
 export interface RunConfig {
@@ -64,20 +57,10 @@ export interface RunConfig {
    */
   inheritedProviders?: Array<{ provider: string; config: any }>;
   /**
-   * Diagnostic continuation of an earlier run. The source run is never modified:
-   * its workspace is copied into a fresh, uniquely named run and its transcript is
-   * forked into a new session. Resumed runs can never be an autonomous PASS.
-   */
-  resumeFrom?: { runId: string; workspace: string; sessionFile: string | null };
-  /**
    * Optional base directory for agent workspaces (default: inside the run dir).
    * Set PI_BENCHMARK_WORKSPACE_ROOT to keep workspaces out of the results tree.
    */
   workspaceRoot?: string;
-  /** Hard cap on completed assistant turns. */
-  maxTurns?: number;
-  /** Fixed rev2 continuation budget; zero is diagnostic no-continuation mode. */
-  continuationLimit?: number;
 }
 
 /**
@@ -154,11 +137,9 @@ function slug(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_").toLowerCase();
 }
 
-export function buildRunPaths(cfg: RunConfig, timestamp: string, resumeMarker?: string): RunPaths {
+export function buildRunPaths(cfg: RunConfig, timestamp: string): RunPaths {
   const modelSlug = slug(`${cfg.model.provider}/${cfg.model.id}`);
-  // A resumed run gets its own directory name so it can never collide with, or
-  // overwrite, the run it was continued from.
-  const runName = `run-${String(cfg.runIndex).padStart(2, "0")}${resumeMarker ? `-${resumeMarker}` : ""}`;
+  const runName = `run-${String(cfg.runIndex).padStart(2, "0")}`;
   const runDir = path.join(
     cfg.benchRoot,
     cfg.benchmark,
@@ -166,14 +147,8 @@ export function buildRunPaths(cfg: RunConfig, timestamp: string, resumeMarker?: 
     modelSlug,
     runName,
   );
-  const rev2Root = cfg.benchmark === "agent-endurance-v5" && process.platform === "win32"
-    ? "C:\\AI\\Scratch\\pi-agent-benchmarks"
-    : undefined;
-  const workspaceRoot = cfg.workspaceRoot ?? rev2Root;
-  const workspace = workspaceRoot
-    ? cfg.benchmark === "agent-endurance-v5"
-      ? path.join(workspaceRoot, modelSlug, `${timestamp}-${randomBytes(4).toString("hex")}`)
-      : path.join(workspaceRoot, `${modelSlug}-${timestamp}-${runName}`)
+  const workspace = cfg.workspaceRoot
+    ? path.join(cfg.workspaceRoot, `${modelSlug}-${timestamp}-${runName}`)
     : path.join(runDir, "workspace");
   return {
     runDir,
@@ -183,60 +158,25 @@ export function buildRunPaths(cfg: RunConfig, timestamp: string, resumeMarker?: 
   };
 }
 
-function shortId(value: string): string {
-  return value.replace(/[^a-zA-Z0-9]/g, "").slice(-8) || "unknown";
-}
-
 /** Workspace placement honouring PI_BENCHMARK_WORKSPACE_ROOT when configured. */
 export function configuredWorkspaceRoot(): string | undefined {
   const value = process.env.PI_BENCHMARK_WORKSPACE_ROOT;
   return value && value.trim() ? path.resolve(value) : undefined;
 }
 
-const PHASE_COUNT = 12;
-const REV2_CONTINUATION = "Continue working on the remaining phases. Do not restart completed work.";
-
-function rev2CompletionGate(workspace: string): boolean {
-  if (!fs.existsSync(path.join(workspace, "DONE.md"))) return false;
-  const env = { PATH: process.env.PATH ?? "", PYTHONHASHSEED: "0", WMS_NOW: "2026-01-02T03:04:05+00:00" };
-  const help = spawnSync(process.platform === "win32" ? "python" : "python3", ["-m", "wms", "--help"], {
-    cwd: workspace, env, timeout: 30000, windowsHide: true,
-  });
-  if (help.status !== 0) return false;
-  const tests = spawnSync(process.platform === "win32" ? "python" : "python3", ["-m", "unittest", "discover", "-s", "tests"], {
-    cwd: workspace, env, timeout: 180000, windowsHide: true,
-  });
-  return tests.status === 0;
-}
-
 export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   const startedAt = new Date();
   const timestamp = startedAt.toISOString().replace(/[:.]/g, "-");
-  const resumed = Boolean(cfg.resumeFrom);
-  const resumeMarker = resumed ? `resumed-${shortId(cfg.resumeFrom!.runId)}` : undefined;
-  const paths = buildRunPaths(cfg, timestamp, resumeMarker);
-  const integrityBefore = cfg.benchmark === "agent-endurance-v5"
-    ? captureIntegrity(cfg.agentDir, path.resolve(import.meta.dirname, ".."))
-    : null;
+  const paths = buildRunPaths(cfg, timestamp);
   fs.mkdirSync(paths.workspace, { recursive: true });
   fs.mkdirSync(paths.sessionDir, { recursive: true });
 
-  if (resumed) {
-    // Copy the source workspace so the original run stays untouched. Byte-for-byte
-    // copies keep the diagnostic run independent of the run it continues.
-    const skip = /[\\/](?:__pycache__|node_modules|[.]git)(?:[\\/]|$)/;
-    fs.cpSync(cfg.resumeFrom!.workspace, paths.workspace, { recursive: true, filter: (source) => !skip.test(source) });
-  }
-
   const metrics = new RunMetrics();
   let timedOut = false;
-  let turnBudgetExceeded = false;
-  let continuationsSent = 0;
   let harnessError: string | null = null;
   let agentMs = 0;
   let sessionFile: string | null = null;
   const nativeFinalizers: Promise<void>[] = [];
-  const structuredEvents: any[] = [];
   let nativeCompleted = 0;
 
   metrics.start();
@@ -279,9 +219,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     });
     await resourceLoader.reload();
 
-    const sessionManager = resumed
-      ? SessionManager.forkFrom(cfg.resumeFrom!.sessionFile ?? "", paths.workspace, paths.sessionDir)
-      : SessionManager.create(paths.workspace, paths.sessionDir);
+    const sessionManager = SessionManager.create(paths.workspace, paths.sessionDir);
     sessionFile = sessionManager.getSessionFile() ?? null;
 
     // Reuse the already-resolved Pi provider configuration on the child session so
@@ -325,7 +263,6 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
       // Codemode nested tools belong to the one visible top-level codemode call.
       // Counting both levels would inflate tool and error metrics.
       if (event.parentToolCallId && /^tool_execution_/.test(String(event.type))) return;
-      structuredEvents.push({ ...event, atMs: metrics.elapsedMs() });
       if (event.type === "message_start" && event.message?.role === "assistant") {
         metrics.beginAssistantMessage();
       } else if (event.type === "message_update") {
@@ -373,11 +310,6 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
           expandedText: assistantText.length > 600 ? assistantText : undefined,
           isError: reason === "error" || reason === "aborted",
         });
-        if (cfg.maxTurns && metrics.snapshot().assistantTurnsCompleted >= cfg.maxTurns) {
-          turnBudgetExceeded = true;
-          metrics.markAborted();
-          session.abort().catch(() => undefined);
-        }
       } else if (event.type === "tool_execution_start") {
         cfg.onProgress?.(`Validating… taskAvg ${metrics.snapshot().weightedTps.toFixed(1)}`);
         forward({ kind: "tool_start", title: `${event.toolName} running`, text: compactJson(event.args) });
@@ -418,14 +350,6 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
     try {
       await session.prompt(cfg.prompt);
-      if (cfg.benchmark === "agent-endurance-v5") {
-        const limit = Math.max(0, Math.min(3, cfg.continuationLimit ?? 3));
-        while (!turnBudgetExceeded && !timedOut && continuationsSent < limit && !rev2CompletionGate(paths.workspace)) {
-          continuationsSent++;
-          structuredEvents.push({ type: "manual_continuation", atMs: metrics.elapsedMs(), reason: "completion gate failed", index: continuationsSent });
-          await session.prompt(REV2_CONTINUATION);
-        }
-      }
     } finally {
       clearTimeout(timer);
       if (cfg.signal) cfg.signal.removeEventListener("abort", onOuterAbort);
@@ -477,11 +401,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     visual: null,
   };
 
-  const isEndurance = ["agent-endurance-v3", "agent-endurance-v4", "agent-endurance-v5"].includes(cfg.benchmark);
-  if (isEndurance) {
-    browser.skipped = true;
-    browser.errors.push("browser validation not applicable to Python benchmark");
-  } else if (!cfg.runBrowser) {
+  if (!cfg.runBrowser) {
     browser.skipped = true;
     browser.errors.push("browser validation disabled by --no-browser");
   } else if (artifact.found) {
@@ -501,7 +421,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
 
   // Compliance validation against the produced artifact source + runtime facts.
   let compliance: ComplianceReport | null = null;
-  if (!isEndurance && artifact.found && artifact.path) {
+  if (artifact.found && artifact.path) {
     try {
       const source = fs.readFileSync(artifact.path, "utf8");
       compliance = evaluateCompliance(source, browser.runtime, artifact.sizeBytes);
@@ -510,7 +430,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     }
   }
 
-  let { outcome, reasons } = determineOutcome({
+  const { outcome, reasons } = determineOutcome({
     metrics: snapshot,
     artifact,
     browser,
@@ -520,127 +440,9 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     compliance,
   });
 
-  let endurance: RunResult["endurance"];
-  if (isEndurance) {
-    forward({ kind: "phase", title: "Running independent hidden evaluator" });
-    const evaluation = evaluateEndurance(paths.workspace, { benchmarkVersion: cfg.promptVersion });
-    const evaluatorOutputPath = path.join(paths.runDir, "evaluator.json");
-    fs.writeFileSync(evaluatorOutputPath, JSON.stringify(evaluation, null, 2), "utf8");
-    const session = analyzeEnduranceSession(sessionFile, paths.workspace, {
-      resumePromptText: resumed ? cfg.prompt : undefined,
-    });
-    const telemetry = mergeEnduranceTelemetry(
-      parseEnduranceEvents(structuredEvents, evaluation.completed),
-      session,
-      { completed: evaluation.completed, resumed, resumePromptText: resumed ? cfg.prompt : undefined },
-    );
-    const rev2GatePassed = cfg.benchmark === "agent-endurance-v5" ? rev2CompletionGate(paths.workspace) : evaluation.completed;
-    if (cfg.benchmark === "agent-endurance-v5") {
-      const stopCount = session.available ? session.stopReasons.stop : Number(/stop=(\d+)/.exec(telemetry.stopReasons)?.[1] ?? 0);
-      telemetry.prematureStops = rev2GatePassed ? Math.max(0, stopCount - 1) : stopCount;
-      telemetry.failedCompletionClaim = !rev2GatePassed && stopCount > 0;
-    }
-    const scores = scoreEndurance(evaluation, telemetry, snapshot, {
-      resumed,
-      interrupted: timedOut || snapshot.aborted,
-    });
-    const interrupted = timedOut || snapshot.aborted;
-    outcome = turnBudgetExceeded
-      ? "BUDGET_EXCEEDED"
-      : timedOut
-      ? "FAIL_TIMEOUT"
-      : harnessError
-        ? "ERROR_HARNESS"
-        : interrupted
-          ? "FAIL_AGENT"
-          : evaluation.completed && scores.autonomous === "PASS"
-            ? "PASS"
-            : "FAIL_COMPLIANCE";
-    reasons = [];
-    if (!evaluation.completed) {
-      reasons.push(
-        evaluation.details.length
-          ? evaluation.details.slice(0, 6).join("; ")
-          : `independent evaluator ${evaluation.passed}/${evaluation.total}; phases ${evaluation.phaseCompletion}/${PHASE_COUNT}`,
-      );
-    }
-    if (scores.autonomous === "FAIL") {
-      reasons.push(
-        `autonomous reliability FAIL (premature stops=${telemetry.prematureStops}, continuations=${telemetry.manualContinuations}, boundary violations=${telemetry.boundaryViolations})`,
-      );
-    }
-    if (resumed) reasons.push("resumed run is diagnostic: not eligible for an autonomous PASS");
-    const integrityChanged = integrityBefore
-      ? compareIntegrity(integrityBefore, captureIntegrity(cfg.agentDir, path.resolve(import.meta.dirname, "..")))
-      : [];
-    if (cfg.benchmark === "agent-endurance-v5" && telemetry.boundarySamples.some((sample) => /evaluators|hidden/i.test(sample))) {
-      integrityChanged.push("hidden evaluator access recorded in tool-call log");
-    }
-    if (integrityChanged.length) {
-      outcome = "FAIL_AGENT";
-      reasons.unshift(`integrity violation: ${integrityChanged.join(", ")}`);
-    }
-    endurance = {
-      status: integrityChanged.length
-        ? "INTEGRITY_VIOLATION"
-        : resumed
-        ? "RESUMED"
-        : turnBudgetExceeded || timedOut
-          ? "BUDGET_EXCEEDED"
-          : harnessError
-            ? "CRASHED"
-            : evaluation.completed && continuationsSent === 0
-              ? "AUTONOMOUS_PASS"
-              : evaluation.completed
-                ? "PASS_WITH_CONTINUATION"
-                : evaluation.passed > 0
-                  ? "PARTIAL"
-                  : "FAILED",
-      evaluation,
-      telemetry,
-      scores,
-      resumed,
-      ...(resumed ? { resumeOf: cfg.resumeFrom!.runId } : {}),
-      sessionFile,
-      evaluatorOutputPath,
-      integrity: { ok: integrityChanged.length === 0, changedPaths: integrityChanged },
-      configuration: {
-        provider: cfg.model.provider,
-        model: cfg.model.id,
-        thinkingLevel: cfg.thinkingLevel,
-        contextWindow: cfg.model.contextWindow ?? "UNKNOWN",
-        maxTokens: cfg.model.maxTokens ?? "UNKNOWN",
-        timeoutMs: cfg.timeoutMs,
-        maxTurns: cfg.maxTurns ?? "UNKNOWN",
-        continuationLimit: cfg.continuationLimit ?? (cfg.benchmark === "agent-endurance-v5" ? 3 : 0),
-        continuationsSent,
-        lockedVariables: {
-          benchmarkVersion: cfg.promptVersion,
-          contextLength: cfg.model.contextWindow ?? "UNKNOWN",
-          kvCacheType: cfg.model.kvCacheType ?? cfg.model.kvCache ?? "UNKNOWN",
-          temperature: cfg.model.temperature ?? "UNKNOWN",
-          topP: cfg.model.topP ?? "UNKNOWN",
-          topK: cfg.model.topK ?? "UNKNOWN",
-          minP: cfg.model.minP ?? "UNKNOWN",
-          repeatPenalty: cfg.model.repeatPenalty ?? "UNKNOWN",
-          seed: cfg.model.seed ?? "UNKNOWN",
-          reasoningLevel: cfg.thinkingLevel,
-          strataVersion: "UNKNOWN",
-          piVersion: "UNKNOWN",
-          gpu: "UNKNOWN",
-          driverVersion: "UNKNOWN",
-          otherGpuWorkloads: "UNKNOWN",
-        },
-        // Configuration snapshot deliberately contains no credentials or env values.
-        inheritedProviderCount: (cfg.inheritedProviders ?? []).length,
-      },
-    };
-  }
-
   const modelSlug = slug(`${cfg.model.provider}/${cfg.model.id}`);
 
   const idParts = [cfg.benchmark, timestamp, modelSlug, `run-${String(cfg.runIndex).padStart(2, "0")}`];
-  if (resumed) idParts.push(`resumed-${shortId(cfg.resumeFrom!.runId)}`);
 
   // Persist the exact prompt that was sent so every run is reproducible and the
   // hash can be re-verified byte-for-byte against the canonical asset.
@@ -685,6 +487,5 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
     },
     compliance,
     timings: { agentMs, validationMs: browser.durationMs },
-    ...(endurance ? { endurance } : {}),
   };
 }

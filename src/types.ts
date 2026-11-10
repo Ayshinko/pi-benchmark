@@ -216,26 +216,4 @@ export interface RunResult {
   /** Compliance validation of the produced artifact (present on new runs). */
   compliance: ComplianceReport | null;
   timings: { agentMs: number; validationMs: number };
-  /** Present only for Agent Endurance V3; absent keeps historical records compatible. */
-  endurance?: {
-    status?: "AUTONOMOUS_PASS" | "PASS_WITH_CONTINUATION" | "PARTIAL" | "FAILED" | "BUDGET_EXCEEDED" | "CRASHED" | "INTEGRITY_VIOLATION" | "RESUMED";
-    evaluation: import("./endurance-scoring.ts").EnduranceEvaluation & {
-      phases?: Array<{ phase: number; label: string; evidence: string | null; status: "declared" | "missing"; verdict?: "pass" | "partial" | "fail" }>;
-      evaluatorScript?: string;
-      workspace?: string;
-      notes?: string[];
-      evaluatorVersion?: string;
-      evaluatorSha256?: string;
-    };
-    telemetry: import("./endurance-events.ts").EnduranceTelemetry;
-    scores: import("./endurance-scoring.ts").EnduranceScores;
-    resumed: boolean;
-    /** Run id this diagnostic run continued from (only when resumed). */
-    resumeOf?: string;
-    /** Transcript the measurements came from. */
-    sessionFile?: string | null;
-    evaluatorOutputPath?: string;
-    integrity?: { ok: boolean; changedPaths: string[] };
-    configuration: Record<string, unknown>;
-  };
 }

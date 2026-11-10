@@ -11,6 +11,7 @@ const registered: string[] = [];
 const fakePi = {
   registerCommand: (name: string) => registered.push(`command:${name}`),
   registerMessageRenderer: (type: string) => registered.push(`renderer:${type}`),
+  registerEntryRenderer: (type: string) => registered.push(`entryRenderer:${type}`),
   registerTool: () => {},
   registerFlag: () => {},
   registerShortcut: () => {},

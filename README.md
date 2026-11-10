@@ -4,158 +4,17 @@ A benchmark harness for **complete coding-agent tasks**: the agent gets one prom
 empty isolated workspace, must produce a runnable artifact, and the harness verifies that
 artifact in a real browser and scores the run.
 
-The original production benchmark is **Pagoda v1** (`pagoda-v1`): build a
+The one and only production benchmark is **Pagoda v1** (`pagoda-v1`): build a
 Japanese voxel pagoda garden in Three.js using instancing, interactive controls, particles and
-HUD readouts.
+HUD readouts. It measures end-to-end coding-agent throughput (native TPS) and artifact quality on
+a single complete coding task, with any currently selected Pi model/provider (local Strata models
+or cloud models). Nothing in the suite hardcodes a model name, and the current model, provider,
+thinking level and inference settings are preserved unless advanced flags explicitly override
+them.
 
-The second production suite is **Agent Endurance V3** (`agent-endurance-v3`), a long-running,
-standard-library-only Python warehouse-system task with hidden deterministic verification.
-
-**Agent Endurance V4** (`agent-endurance-v4`) is the contract-clarified successor. It preserves
-the same workload and scoring weights, but explicitly requires `inventory()` to return available
-stock as an integer and every `lines`/`quantities` payload to be a `{sku: qty}` mapping. V3 remains
-available unchanged for historical comparisons; V3 and V4 results must not be mixed.
-
-**Agent Endurance V5** (`agent-endurance-v5`, internal version `agent-endurance-3.0.0-rev2`)
-implements the rev 2 CLI-only `wms/` contract. It freezes the prompt with a registered SHA-256,
-uses a four-hour and 400-turn budget, defaults to at most three fixed-text continuations, writes
-workspaces under `C:\AI\Scratch\pi-agent-benchmarks`, records integrity hashes, and evaluates a
-copied package with fixed `PYTHONHASHSEED` and `WMS_NOW`. It is not comparable with V3 or V4.
-
-## Agent Endurance V3
-
-**Purpose.** Evaluate long-running coding-agent reliability, software-engineering
-capability, tool-call stability, error recovery and autonomous task completion. It works with
-any currently selected Pi model/provider (local Strata models or cloud models). Nothing in the
-suite hardcodes a model name, and the current model, provider, thinking level and inference
-settings are preserved unless advanced flags explicitly override them.
-
-### Select and run
-
-```text
-/benchmark                       → choose "Agent Endurance V3" in the wizard
-/benchmark agent-endurance-v3    → fast path with the current model/thinking
-/benchmark agent-endurance-v3 3  → three runs
-/artifact-bench agent-endurance-v3 [--runs N] [--model provider/id] [--thinking level]
-                                 [--timeout seconds] [--resume <runId>]
-node src/cli.ts agent-endurance-v3 --model provider/id [--runs N]   # headless CLI
-node src/cli.ts agent-endurance-v4 --model provider/id [--runs N]   # clarified contract
-node src/cli.ts agent-endurance-v5 --model provider/id --runs 3     # rev 2 fair-comparison suite
-```
-
-Default wall-clock budget for this suite is **3 hours** (`timeoutSeconds: 10800` in the suite
-definition) because a 12-phase build needs far more time than a single-file artifact task; keep
-it identical for every model you compare.
-
-### The standardized workload
-
-The prompt in `src/assets/agent-endurance-v3.prompt.txt` is immutable inside a benchmark
-version; every model receives the same bytes (`promptHash` proves it). The agent must build a
-Python **Mini Warehouse Management System** using only the standard library, in 12 phases:
-architecture plan, multi-warehouse inventory, atomic reservations, transfers + partial
-receiving, purchase orders + supplier receiving, returns/refunds/duplicate prevention, atomic
-JSON persistence with integrity checksum, reporting + sales analytics, complete argparse CLI,
-≥ 120 unit tests, refactoring + regression run, ≥ 10 end-to-end scenarios. Objective phase
-evidence comes from `PHASES.md` in the workspace (a bare phase header with no evidence counts as
-missing).
-
-### Independent evaluation (the agent's own tests are never sufficient)
-
-`src/evaluators/agent-endurance-v3.py` (evaluator version `ae3-hidden-2`) lives **outside** every
-evaluated workspace and is never copied into one; the evaluated agent never sees it. It spawns
-`python` with a minimal environment (**PATH only** — no credentials or other secret env values)
-and prints one deterministic JSON object. It verifies 20 behaviours, including: the public
-contract, multi-warehouse stock, atomic reservation/transfer rollback, "invalid lines rejected
-without mutation", transfer and purchase-order receiving bounds, shipping that consumes reserved
-stock exactly once, returns bounded by shipped quantities, duplicate-refund prevention, refunds
-restocking once, persistence round-trips that preserve reservations, two tamper vectors
-(wrong checksum, changed data with the original checksum), atomic replacement with no leftover
-temporary files, cross-process CLI JSON output, non-zero CLI failure exits, and CLI state that
-survives separate processes. Line payload shapes — `{sku: qty}` maps versus `[{sku, qty}]` lists —
-are both accepted and remembered, so an equivalent-but-differently-shaped payload is never scored
-as a failure.
-`test/fixtures/warehouse-ref` (a reference implementation) must pass 20/20, and
-`test/fixtures/warehouse-broken` must fail — proving the evaluator detects incorrect software.
-
-### Scoring (three axes, never merged into one number)
-
-| Axis | Formula / rule |
-|---|---|
-| **Engineering** | `round(100 * (0.8 * hiddenTestRatio + 0.2 * phaseCompletion/12))` — weights unchanged from the first V3 release so history stays comparable. Breakdown ratios: `hiddenTests`, `featureCoverage`, `integration` (cli/integration/reports categories), `integrity` (transactions/persistence/orders/transfers/purchasing/returns). |
-| **Reliability** | `max(0, 100 − 25·prematureStops − 20·manualContinuations − 3·toolFailures − 4·unrecoveredFailures − 5·boundaryViolations − 25·resumed)`. `UNKNOWN` when manual continuations cannot be observed. |
-| **Autonomous** | `PASS` only when the hidden evaluator says complete **and** premature stops = 0 **and** manual continuations = 0 **and** no harness interruption **and** no boundary violations **and** not resumed. Otherwise `FAIL`, or `UNKNOWN` when continuations are unobservable. |
-| **Efficiency** | Raw, deliberately unscored: wall time, cumulative output/input tokens, active context peak, tool calls, assistant turns. More tool calls or more self-written tests earn nothing. |
-
-A run that needed a manual continuation cannot score a perfect autonomous reliability result, and a
-resumed run is always flagged `resumed: true` and can never be an autonomous `PASS` (the result
-card prints `DIAGNOSTIC (continues <runId>)` and the history table shows `resumed yes`). Result
-records carry `evaluatorVersion` and `evaluatorSha256`, so runs scored by different hidden-test
-sets are visibly distinguishable.
-
-### Workspace isolation
-
-Every run gets a uniquely named directory: `<benchRoot>/<benchmark>/<timestamp>/<model-slug>/run-NN/`
-with its own `workspace/`, `session/` and `prompt.txt`. Runs never reuse, overwrite or delete another
-run (a resumed run additionally gets a `run-NN-resumed-<id>` directory and a copy of the source
-workspace). `PI_BENCHMARK_WORKSPACE_ROOT` moves agent workspaces out of the results tree, e.g.
-`C:\AI\Scratch\pi-agent-benchmarks` (the workspace path is always recorded in `run.json`). The
-benchmark session loads no extensions, skills, prompt templates, themes or context files, so Pi
-config, Strata config and installed extensions are never loaded inside the run. The transcript is
-scanned for tool calls that referenced paths outside the workspace or protected locations
-(`.pi/`, `auth.json`, `models.json`, `AppData`, `Program Files`, other benchmark runs); the count
-is reported as `Workspace boundary hits`, with samples — it is an objective audit, not a sandbox.
-
-### Resume (diagnostic only)
-
-`--resume <runId>` (interactive `/artifact-bench` or CLI) continues an existing
-agent-endurance-v3 run: the source workspace is copied and its transcript is forked into a new
-session in a new run directory. A separately versioned continuation prompt
-(`agent-endurance-v3.continuation-v1`) is recorded instead of the canonical prompt, the run is
-flagged `resumed: true`, and it can never be an autonomous PASS. Resumed runs are never eligible
-for the IQ3-vs-IQ4 leaderboard comparison.
-
-### Reports
-
-`/artifact-bench show <id>`, `/artifact-bench history agent-endurance-v3` and the post-run cards
-print: run id, benchmark version, model/provider, thinking level, configuration snapshot
-(provider, model, thinking, context window, max output, timeout, inherited provider count — never
-credentials or env values), engineering score and breakdown, autonomous verdict, reliability score
-and its deduction breakdown, raw efficiency metrics, per-phase evidence, independent-evaluator
-results (hidden-test counts, evaluator version + hash, individual failures), the failure/recovery
-timeline, boundary samples, artifact/session/run-directory paths, and the resumed marker.
-
-### What the metrics mean (and what is UNKNOWN)
-
-| Metric | Source | Meaning |
-|---|---|---|
-| tool calls, tool failures, recovered failures | live pi events + persisted transcript | counted from Pi's own records, never from the model's summary |
-| invalid tool arguments | transcript `argumentsError` + validation-shaped tool errors | structurally invalid tool payloads; `UNKNOWN` when neither source is available |
-| malformed tool calls | transcript text scan | tool-call markup emitted as assistant text (chat-template failures) |
-| premature stops | classification over assistant `stopReason` counts | the final `stop` is the normal loop terminator; only additional earlier stops count |
-| failed completion claim | final `stop` plus independent evaluation | the agent ended normally but the produced artifact did not complete the contract; distinct from interruption or malformed calls |
-| manual continuations | extra user messages after the single benchmark prompt | measured when the transcript exists, otherwise `UNKNOWN` (never assumed zero) |
-| retries | `auto_retry_start/end` events | harness-side automatic retries |
-| compactions | `compaction_start/end` events + transcript `compaction` entries | context compactions |
-| active context peak | max single-turn `input + cacheRead + cacheWrite` | the largest single-turn context; **not** a sum |
-| cumulative tokens | sum of per-turn usage | cumulative usage, kept separate from active context |
-| wall time | runner lifecycle | prompt start → agent loop end |
-| boundary violations | transcript tool-argument audit | tool calls touching paths outside the workspace |
-
-### Limitations
-
-- Pi is not OS-sandboxed: the boundary audit detects out-of-workspace tool arguments after the
-  fact; it cannot prevent them. Prompt-level isolation is the only preventive measure.
-- Manual continuation cannot be injected into a non-interactive benchmark session by a user, so
-  normally it measures 0 from the transcript; hosts that cannot produce a transcript report
-  `UNKNOWN` rather than 0.
-- Active context peak is derived from provider-reported usage; providers that omit usage data make
-  it `UNKNOWN`. Cumulative token totals inherit the same accuracy marking as Pagoda (Strata native,
-  mixed, or estimated).
-- Historical runs keep their original measurements; they are compared through
-  `benchmarkVersion`, `promptHash` and `evaluatorVersion`/`evaluatorSha256`. Runs recorded with the
-  earlier hidden-test set (`ae3-hidden-1`) are visibly not comparable with `ae3-hidden-2` runs.
-- Self-written unit-test counts are never scored (120 tests is a phase-evidence requirement, not a
-  quality signal), and tool-call volume is reported raw.
+Retired **Agent Endurance** suites (V2–V5) have been removed from this repository. Their historical
+result records (`index.jsonl` entries under the benchmark roots) are kept on disk untouched but are
+hidden from history/compare/show views because Pagoda v1 is the only shipped suite.
 
 ## Install
 
@@ -182,7 +41,8 @@ fails.
 
 3. Choose the number of runs (1, 3, 5, or Custom).
 4. Confirm the plan and the Strata-exclusive-use warning (for native TPS).
-5. Wait for the result card.
+5. Wait for the result card — and the live progress in the chat (see
+   [Live conversation transcript](#live-conversation-transcript)).
 
 `/benchmark` runs **Pagoda v1** with your **current model and thinking level** — it never changes
 them silently, and it never requires you to remember any flags.
@@ -203,8 +63,7 @@ Normal users never need these, but `--advanced` exposes every knob:
 /benchmark --advanced
 ```
 
-which can configure the benchmark suite, runs, model, thinking, timeout, browser validation and
-settle time.
+which can configure the runs, model, thinking, timeout, browser validation and settle time.
 
 ### Standardized timeout
 
@@ -213,9 +72,6 @@ models, in every flow (`/benchmark`, `/benchmark N`, the advanced interface, and
 `/artifact-bench pagoda`). Do not vary the timeout per model. An advanced user may still
 override it with an explicit `--timeout` value or by editing the advanced-mode field.
 
-Agent Endurance V3 ships its own suite-level default of **10800 s** (three hours), applied
-consistently to every model. Do not vary the endurance timeout per model.
-
 ## Legacy / advanced interface
 
 `/artifact-bench` remains available and fully functional for compatibility:
@@ -223,8 +79,6 @@ consistently to every model. Do not vary the endurance timeout per model.
 ```
 /artifact-bench pagoda [--runs N] [--model provider/id] [--thinking level]
                        [--timeout seconds] [--no-browser] [--fake]
-/artifact-bench agent-endurance-v3 [--runs N] [--model provider/id] [--thinking level]
-                                   [--timeout seconds] [--resume <runId>]
 /artifact-bench history [benchmark] [--limit N]
 /artifact-bench compare <runId> <runId>
 /artifact-bench show <runId>
@@ -309,11 +163,15 @@ during this benchmark. This benchmark does not technically lock the server. Cont
 Pagoda v1 · Run 1/3: elapsed 3m21s | out 8.2k | taskAvg 49.2 tok/s | live 51.1 tok/s | turns 2 | tools 2 | state generating
 ```
 
-Meaningful child-session events are also appended, in order, to the normal parent conversation:
+## Live conversation transcript
+
+Meaningful child-session events are appended, in order, to the normal parent conversation:
 agent messages, top-level tool starts/results, retries/recoveries, validation phases, and periodic
-TPS snapshots. These are durable custom session entries, not messages, so they neither enter the
-evaluated model context nor trigger an LLM turn. Long tool output is concise until Pi's normal
-transcript expansion is enabled.
+TPS snapshots. These are durable custom session entries (`pi.appendEntry`), not messages, so they
+neither enter the evaluated model context nor trigger an LLM turn. Long tool output is concise
+until Pi's normal transcript expansion is enabled. The renderer is registered with
+`pi.registerEntryRenderer("pi-benchmark-transcript", …)` and re-renders entries after session
+reload.
 
 ## What is measured
 
@@ -339,11 +197,12 @@ JSON/session files). For multiple runs a concise aggregate card follows (mean/me
 pass rate, per-run rows). Unavailable data shows `n/a`, never a literal `undefined`.
 
 Pagoda then appends the actual saved `screenshot.png`. Pi TUI renders it inline when the terminal
-advertises Kitty or iTerm2 graphics and `terminal.showImages` is enabled; other terminals show the
-working filename fallback. The currently installed pi-web does not render extension custom-entry
-renderers (and filters custom entries from its default chat view), so it cannot display this image
-inline without pi-web support. The benchmark deliberately does not substitute a context-bearing
-image message, because that would feed presentation data to the model.
+advertises Kitty or iTerm2 graphics and `terminal.showImages` is enabled; other terminals (this
+includes Windows Terminal, which advertises no such protocol) show the working filename fallback.
+The currently installed pi-web does not render extension custom-entry renderers (and filters
+custom entries from its default chat view), so it cannot display this image inline without pi-web
+support. The benchmark deliberately does not substitute a context-bearing image message, because
+that would feed presentation data to the model.
 
 ## Storage
 
@@ -354,15 +213,17 @@ discoverable after a storage-location change; entries are deduplicated by run id
 ```
 ~/.pi/benchmarks/index.jsonl                       one full RunResult per line
 ~/.pi/benchmarks/<benchmark>/<timestamp>/<model>/run-NN/
-    run.json          full result (incl. promptHash, endurance scores, compliance)
+    run.json          full result (incl. promptHash and compliance)
     prompt.txt        exact canonical prompt sent
     workspace/        the artifact the agent wrote
     session/          the isolated session transcript
-    screenshot.png    browser validation screenshot (pagoda only)
+    screenshot.png    browser validation screenshot
 ```
 
 When `PI_CODING_AGENT_DIR` is set and a `<state>/benchmarks/index.jsonl` already exists, that tree
-becomes the write root; the historical `~/.pi/benchmarks` root is always read as well.
+becomes the write root; the historical `~/.pi/benchmarks` root is always read as well. Retired
+Agent Endurance entries in the index are hidden from every view (history, compare, find) but are
+never deleted or rewritten.
 
 ## Isolation
 
@@ -378,20 +239,18 @@ re-registered so authentication works identically inside the isolated session.
 node test/harness.test.ts           # metrics, PNG analysis, outcome, artifact, browser fixtures
 node test/auth-regression.test.ts   # local-provider auth inheritance & fallback
 node test/metrics-incremental.test.ts # streaming estimates and reconciliation
-node test/metrics-incremental.test.ts # streaming estimates and reconciliation
-node test/native-metrics.test.ts        # Strata parsing, baselines, native replacement, fallback
-node test/benchmark-ux.test.ts          # /benchmark UX, canonical prompt & hash, compliance, reports
-node test/agent-endurance-v3.test.ts      # discovery, run isolation, scoring, persistence
-node test/agent-endurance-v3-integration.test.ts # transcript parsing, evaluator, history roots
+node test/native-metrics.test.ts    # Strata parsing, baselines, native replacement, fallback
+node test/status.test.ts            # live status-line rendering and throttling
+node test/transcript.test.ts        # chat transcript entries, screenshot render + fallback
+node test/benchmark-ux.test.ts      # /benchmark UX, canonical prompt & hash, compliance, reports
 ```
 
 ```
 npm test   # runs all of the above (no expensive model generations)
 ```
 
-A fake/end-to-end fixture run is enough to test the whole pipeline without spending tokens, and
-`npm test` includes the lightweight Agent Endurance V3 smoke coverage (fixture implementations and
-mocked session events only — the full 12-phase endurance run is never started automatically):
+A fake/end-to-end fixture run is enough to test the whole pipeline (workspace, browser
+validation, screenshot, compliance, history) without spending tokens:
 
 ```
 node test/e2e-fake.ts

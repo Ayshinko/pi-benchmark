@@ -23,8 +23,8 @@ const LEGACY_BENCH_ROOT = path.join(os.homedir(), ".pi", "benchmarks");
  *
  * PI_BENCHMARK_DIR wins when set (tests, CI). Otherwise the state directory next
  * to PI_CODING_AGENT_DIR is preferred only when that root already contains
- * results; the first Agent Endurance V3 runs live under ~/.pi/benchmarks, and the
- * write root must not switch out from under a populated history.
+ * results; the earliest runs live under ~/.pi/benchmarks, and the write root
+ * must not switch out from under a populated history.
  */
 function resolveBenchRoot(): string {
   if (process.env.PI_BENCHMARK_DIR) return path.resolve(process.env.PI_BENCHMARK_DIR);
@@ -87,6 +87,7 @@ export function loadRuns(benchmark?: string): RunResult[] {
         const key = `${run.id ?? ""}`;
         if (seen.has(key)) continue;
         seen.add(key);
+        if (isRetiredBenchmark(run)) continue;
         if (!benchmark || benchmarkMatches(run, benchmark)) runs.push(run);
       } catch {
         // skip malformed lines
@@ -96,23 +97,34 @@ export function loadRuns(benchmark?: string): RunResult[] {
   return runs;
 }
 
+/** Suite keys retired from the product (Agent Endurance V2-V5 and variants). */
+const RETIRED_BENCHMARKS = new Set([
+  "agent-endurance",
+  "agent-endurance-v2",
+  "agent-endurance-v3",
+  "agent-endurance-v4",
+  "agent-endurance-v5",
+  "agent-endurance-3.0.0-rev2",
+]);
+
+/**
+ * True for historical results of retired endurance suites. Their on-disk records
+ * are preserved untouched, but they stay hidden from every active view (history,
+ * compare, find) because Pagoda v1 is the only shipped suite.
+ */
+function isRetiredBenchmark(run: RunResult): boolean {
+  const name = String(run?.benchmark ?? "").trim().toLowerCase();
+  const version = String(run?.benchmarkVersion ?? "").trim().toLowerCase();
+  return RETIRED_BENCHMARKS.has(name) || RETIRED_BENCHMARKS.has(version) || name.startsWith("agent-endurance") || version.startsWith("agent-endurance");
+}
+
 /** History filters accept both the suite key and the canonical version name. */
 function benchmarkMatches(run: RunResult, reference: string): boolean {
   const wanted = reference.trim().toLowerCase();
   const runBenchmark = String(run.benchmark ?? "").toLowerCase();
   const version = String(run.benchmarkVersion ?? "").toLowerCase();
-  if (runBenchmark === wanted || version === wanted) return true;
   if (wanted === "pagoda" || wanted === "pagoda-v1") return runBenchmark === "pagoda" || version === "pagoda-v1";
-  if (wanted === "agent-endurance-v3" || wanted === "endurance") {
-    return runBenchmark === "agent-endurance-v3" || version === "agent-endurance-v3";
-  }
-  if (wanted === "agent-endurance-v4" || wanted === "endurance-v4") {
-    return runBenchmark === "agent-endurance-v4" || version === "agent-endurance-v4";
-  }
-  if (["agent-endurance-v5", "endurance-v5", "agent-endurance-3.0.0-rev2"].includes(wanted)) {
-    return runBenchmark === "agent-endurance-v5" || version === "agent-endurance-3.0.0-rev2";
-  }
-  return false;
+  return runBenchmark === wanted || version === wanted;
 }
 
 export function findRun(id: string): RunResult | null {
@@ -130,12 +142,6 @@ export function fairComparisonIssues(runs: RunResult[]): string[] {
     ["benchmark version", (r) => r.benchmarkVersion],
     ["prompt hash", (r) => r.promptHash],
     ["thinking level", (r) => r.thinkingLevel],
-    ["context length", (r) => r.endurance?.configuration?.contextWindow ?? "UNKNOWN"],
-    ["max output", (r) => r.endurance?.configuration?.maxTokens ?? "UNKNOWN"],
-    ["wall budget", (r) => r.endurance?.configuration?.timeoutMs ?? "UNKNOWN"],
-    ["turn budget", (r) => r.endurance?.configuration?.maxTurns ?? "UNKNOWN"],
-    ["continuation policy", (r) => r.endurance?.configuration?.continuationLimit ?? "UNKNOWN"],
-    ["locked variables", (r) => r.endurance?.configuration?.lockedVariables ?? "UNKNOWN"],
   ];
   const issues: string[] = [];
   for (const [label, read] of fields) {
