@@ -164,6 +164,7 @@ export function formatRunDetail(run: RunResult): string {
       `  boundary       workspace violations ${e.telemetry.boundaryViolations}`,
       `  integrity      ${e.integrity ? (e.integrity.ok ? "PASS" : `VIOLATION: ${e.integrity.changedPaths.join(", ")}`) : "UNKNOWN"}`,
       `  resumed        ${e.resumed ? `DIAGNOSTIC continuation of ${e.resumeOf ?? "unknown"}` : "no (single uninterrupted session)"}`,
+      `  evaluator out  ${e.evaluatorOutputPath ?? "not persisted (legacy)"}`,
     );
   }
   if (run.browser.consoleErrors.length > 0) {

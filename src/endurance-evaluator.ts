@@ -47,6 +47,8 @@ export interface PhaseEvidence {
   label: string;
   evidence: string | null;
   status: "declared" | "missing";
+  /** Rev2 evaluator-backed phase verdict. */
+  verdict?: "pass" | "partial" | "fail";
 }
 
 export interface EnduranceEvaluationReport extends EnduranceEvaluation {
@@ -114,8 +116,12 @@ export function evaluateEndurance(
     };
   }
 
-  const phasesDeclared = phases.filter((p) => p.status === "declared").length;
-  const completed = parsed.passed === parsed.total && phasesDeclared === PHASE_LABELS.length;
+  const rev2 = options.benchmarkVersion === "agent-endurance-3.0.0-rev2";
+  if (rev2) applyRev2PhaseVerdicts(phases, parsed.categories ?? {});
+  const phasesDeclared = rev2
+    ? phases.reduce((sum, phase) => sum + (phase.verdict === "pass" ? 1 : phase.verdict === "partial" ? 0.5 : 0), 0)
+    : phases.filter((p) => p.status === "declared").length;
+  const completed = parsed.passed === parsed.total && phases.every((phase) => rev2 ? phase.verdict === "pass" : phase.status === "declared");
   if (String(parsed.evaluatorVersion ?? "") !== identity.version) {
     notes.push(
       `evaluator reported version ${parsed.evaluatorVersion ?? "missing"}, expected ${identity.version}`,
@@ -135,6 +141,18 @@ export function evaluateEndurance(
     evaluatorVersion: String(parsed.evaluatorVersion ?? identity.version),
     evaluatorSha256: String(parsed.evaluatorSha256 ?? identity.sha256),
   };
+}
+
+function applyRev2PhaseVerdicts(phases: PhaseEvidence[], categories: Record<string, { passed: number; total: number }>): void {
+  const mapping = ["interface", "inventory", "reservations", "transfers", "purchasing", "returns",
+    "persistence", "reports", "interface", "interface", "persistence", "interface"];
+  phases.forEach((phase, index) => {
+    const entry = categories[mapping[index]];
+    const ratio = entry?.total ? entry.passed / entry.total : 0;
+    if (phase.status === "declared" && ratio === 1) phase.verdict = "pass";
+    else if (phase.status === "declared" || ratio > 0) phase.verdict = "partial";
+    else phase.verdict = "fail";
+  });
 }
 
 /**

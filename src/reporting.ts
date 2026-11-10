@@ -217,7 +217,7 @@ export function enduranceSection(run: RunResult): string[] {
     row2("Phases", `${e.evaluation.phaseCompletion}/12`),
   ];
   for (const phase of e.evaluation.phases ?? []) {
-    lines.push(row2(`  phase ${phase.phase}`, `${phase.status === "declared" ? "declared" : "MISSING"}  ${phase.label}`));
+    lines.push(row2(`  phase ${phase.phase}`, `${phase.verdict ?? (phase.status === "declared" ? "declared" : "MISSING")}  ${phase.label}`));
   }
   const failures = e.evaluation.details ?? [];
   if (failures.length) {
@@ -305,11 +305,14 @@ export function formatAggregateCard(runs: RunResult[]): string {
   const enduranceRuns = runs.filter((run) => run.endurance);
   if (enduranceRuns.length) {
     const engineering = enduranceRuns.map((run) => run.endurance!.scores.engineering);
+    const reliability = enduranceRuns.map((run) => run.endurance!.scores.reliability).filter((value): value is number => typeof value === "number");
     const autonomous = enduranceRuns.map((run) => run.endurance!.scores.autonomous);
     const hidden = enduranceRuns.map((run) => `${run.endurance!.evaluation.passed}/${run.endurance!.evaluation.total}`);
     lines.push(
       "",
       `Engineering    ${engineering.map((value) => `${value}/100`).join(", ")}`,
+      `Eng median     ${median(engineering).toFixed(1)} (range ${Math.min(...engineering)}-${Math.max(...engineering)})`,
+      `Rel median     ${reliability.length ? `${median(reliability).toFixed(1)} (range ${Math.min(...reliability)}-${Math.max(...reliability)})` : "UNKNOWN"}`,
       `Autonomous     ${autonomous.join(", ")}`,
       `Hidden tests   ${hidden.join(", ")}`,
       `Resumed        ${enduranceRuns.filter((run) => run.endurance!.resumed).length} diagnostic run(s)`,

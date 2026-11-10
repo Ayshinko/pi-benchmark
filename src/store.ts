@@ -135,6 +135,7 @@ export function fairComparisonIssues(runs: RunResult[]): string[] {
     ["wall budget", (r) => r.endurance?.configuration?.timeoutMs ?? "UNKNOWN"],
     ["turn budget", (r) => r.endurance?.configuration?.maxTurns ?? "UNKNOWN"],
     ["continuation policy", (r) => r.endurance?.configuration?.continuationLimit ?? "UNKNOWN"],
+    ["locked variables", (r) => r.endurance?.configuration?.lockedVariables ?? "UNKNOWN"],
   ];
   const issues: string[] = [];
   for (const [label, read] of fields) {

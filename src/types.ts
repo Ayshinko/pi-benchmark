@@ -220,7 +220,7 @@ export interface RunResult {
   endurance?: {
     status?: "AUTONOMOUS_PASS" | "PASS_WITH_CONTINUATION" | "PARTIAL" | "FAILED" | "BUDGET_EXCEEDED" | "CRASHED" | "INTEGRITY_VIOLATION" | "RESUMED";
     evaluation: import("./endurance-scoring.ts").EnduranceEvaluation & {
-      phases?: Array<{ phase: number; label: string; evidence: string | null; status: "declared" | "missing" }>;
+      phases?: Array<{ phase: number; label: string; evidence: string | null; status: "declared" | "missing"; verdict?: "pass" | "partial" | "fail" }>;
       evaluatorScript?: string;
       workspace?: string;
       notes?: string[];
@@ -234,6 +234,7 @@ export interface RunResult {
     resumeOf?: string;
     /** Transcript the measurements came from. */
     sessionFile?: string | null;
+    evaluatorOutputPath?: string;
     integrity?: { ok: boolean; changedPaths: string[] };
     configuration: Record<string, unknown>;
   };

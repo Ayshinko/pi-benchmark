@@ -292,6 +292,7 @@ check("rev2 has an independent evaluator identity", identityV5.version === "ae5-
   && identityV5.sha256 !== identityV4.sha256);
 check("rev2 reference implementation passes every hidden group", goodV5.completed && goodV5.passed === goodV5.total,
   JSON.stringify({ passed: goodV5.passed, total: goodV5.total, details: goodV5.details }));
+check("rev2 reports evaluator-backed phase verdicts", goodV5.phases.every((phase) => phase.verdict === "pass"));
 const goodV5Again = evaluateEndurance(path.join(FIXTURES, "wms-ref"), { benchmarkVersion: "agent-endurance-3.0.0-rev2" });
 check("rev2 evaluator is deterministic", goodV5Again.passed === goodV5.passed
   && goodV5Again.total === goodV5.total && JSON.stringify(goodV5Again.categories) === JSON.stringify(goodV5.categories));

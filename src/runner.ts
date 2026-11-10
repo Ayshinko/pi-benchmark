@@ -481,6 +481,8 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
   let endurance: RunResult["endurance"];
   if (isEndurance) {
     const evaluation = evaluateEndurance(paths.workspace, { benchmarkVersion: cfg.promptVersion });
+    const evaluatorOutputPath = path.join(paths.runDir, "evaluator.json");
+    fs.writeFileSync(evaluatorOutputPath, JSON.stringify(evaluation, null, 2), "utf8");
     const session = analyzeEnduranceSession(sessionFile, paths.workspace, {
       resumePromptText: resumed ? cfg.prompt : undefined,
     });
@@ -557,6 +559,7 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
       resumed,
       ...(resumed ? { resumeOf: cfg.resumeFrom!.runId } : {}),
       sessionFile,
+      evaluatorOutputPath,
       integrity: { ok: integrityChanged.length === 0, changedPaths: integrityChanged },
       configuration: {
         provider: cfg.model.provider,
@@ -568,6 +571,23 @@ export async function runBenchmark(cfg: RunConfig): Promise<RunResult> {
         maxTurns: cfg.maxTurns ?? "UNKNOWN",
         continuationLimit: cfg.continuationLimit ?? (cfg.benchmark === "agent-endurance-v5" ? 3 : 0),
         continuationsSent,
+        lockedVariables: {
+          benchmarkVersion: cfg.promptVersion,
+          contextLength: cfg.model.contextWindow ?? "UNKNOWN",
+          kvCacheType: cfg.model.kvCacheType ?? cfg.model.kvCache ?? "UNKNOWN",
+          temperature: cfg.model.temperature ?? "UNKNOWN",
+          topP: cfg.model.topP ?? "UNKNOWN",
+          topK: cfg.model.topK ?? "UNKNOWN",
+          minP: cfg.model.minP ?? "UNKNOWN",
+          repeatPenalty: cfg.model.repeatPenalty ?? "UNKNOWN",
+          seed: cfg.model.seed ?? "UNKNOWN",
+          reasoningLevel: cfg.thinkingLevel,
+          strataVersion: "UNKNOWN",
+          piVersion: "UNKNOWN",
+          gpu: "UNKNOWN",
+          driverVersion: "UNKNOWN",
+          otherGpuWorkloads: "UNKNOWN",
+        },
         // Configuration snapshot deliberately contains no credentials or env values.
         inheritedProviderCount: (cfg.inheritedProviders ?? []).length,
       },
