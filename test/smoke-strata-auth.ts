@@ -1,7 +1,7 @@
 /**
  * Live smoke test for the local-provider authentication fix.
  *
- * Mirrors how the pi-strata-provider extension registers `strata-auto` and then runs the
+ * Mirrors how the pi-localmodel-auto extension (formerly pi-strata-provider) registers `strata-auto` and then runs the
  * real benchmark runner against `strata-auto/swift-1.5-iq3_xxs`, verifying that the
  * isolated child session now inherits the provider config and actually starts generating
  * tokens instead of failing with "No API key found for strata-auto".

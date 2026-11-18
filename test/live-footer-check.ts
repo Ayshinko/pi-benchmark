@@ -7,7 +7,7 @@ const jiti = createJiti(import.meta.url, { alias: { '@earendil-works/pi-coding-a
 const root = 'C:/AI/State/Pi/agent/git/github.com/Ayshinko/pi-benchmark';
 const { runBenchmark } = await jiti.import(root + '/src/runner.ts');
 const { renderTelemetry } = await jiti.import(root + '/src/telemetry.ts');
-const c = JSON.parse(fs.readFileSync('C:/AI/State/Pi/agent/git/github.com/Ayshinko/pi-strata-provider/config.json','utf8'));
+const c = JSON.parse(fs.readFileSync('C:/AI/State/Pi/agent/git/github.com/Ayshinko/pi-localmodel-auto/config.json','utf8'));
 const model = { ...c.defaults, id:'deepseek-v4.1-flash', name:'deepseek-v4.1-flash', provider:c.providerId, api:c.api, baseUrl:c.baseUrl };
 let live = false, avg = false, clock = false;
 const result = await runBenchmark({ benchmark:'live-footer-check', prompt:'Reply with the numbers 1 through 30 separated by spaces. Do not use tools.', promptVersion:'diagnostic', expectedArtifact:'index.html', model, thinkingLevel:'low', timeoutMs:120000, settleMs:500, viewport:{width:1280,height:720}, runIndex:1, agentDir:'C:/AI/State/Pi/agent', benchRoot:fs.mkdtempSync(path.join(os.tmpdir(),'pi-footer-check-')), runBrowser:false, inheritedProviders:[{provider:c.providerId,config:{name:c.name,baseUrl:c.baseUrl,apiKey:c.apiKey,api:c.api,models:[model]}}], onProgress:console.log, onMetrics:s=>{ const line=renderTelemetry(s,'low'); if(s.liveTps>0) live=true; if(s.weightedTps>0) avg=true; if(s.wallMs>=1000) clock=true; console.log('FOOTER',line); } });
